@@ -29,9 +29,15 @@ add_library(dnslab_core STATIC
     src/dns/byte_utils.cpp
     src/dns/name_codec.cpp
     src/dns/query_encoder.cpp
-    src/dns/message_parser.cpp)
+    src/dns/message_parser.cpp
+    src/net/endpoint.cpp
+    src/net/socket.cpp
+    src/net/deadline.cpp)
 target_include_directories(dnslab_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(dnslab_core PUBLIC cxx_std_23)
+if(WIN32)
+    target_link_libraries(dnslab_core PUBLIC ws2_32)
+endif()
 
 configure_file(cmake/version.hpp.in generated/dnslab/version.hpp @ONLY)
 add_executable(dnslab src/main.cpp)
@@ -57,7 +63,10 @@ if(BUILD_TESTING)
         tests/unit/name_codec_tests.cpp
         tests/unit/name_compression_tests.cpp
         tests/unit/query_encoder_tests.cpp
-        tests/unit/message_parser_tests.cpp)
+        tests/unit/message_parser_tests.cpp
+        tests/unit/endpoint_tests.cpp
+        tests/unit/socket_tests.cpp
+        tests/unit/deadline_tests.cpp)
     target_link_libraries(dnslab_tests PRIVATE dnslab_core Catch2::Catch2WithMain)
     dnslab_enable_warnings(dnslab_tests)
 

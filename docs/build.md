@@ -90,4 +90,4 @@ ctest --test-dir build-system --output-on-failure
 
 Ninja 等单配置生成器通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`。运行路径随生成器和配置变化：Ninja 为 `build/dnslab.exe`（Windows）或 `build/dnslab`（Linux），上述 MSVC 示例为 `build-msvc/Debug/dnslab.exe`。
 
-核心测试覆盖整数读写、域名输入校验、普通和压缩名称处理、查询报文编码、完整消息解析，以及命令行基础行为。单元测试设有 10 秒上限以暴露无限循环。未来网络测试使用本地模拟服务器，不访问公共 DNS。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+核心测试覆盖整数读写、域名与端点校验、名称与完整报文处理、套接字生命周期、查询预算，以及命令行基础行为。单元测试设有 10 秒上限以暴露无限循环；预算测试使用固定时刻，套接字测试仅使用本机资源和回环地址。未来收发测试使用本地模拟服务器，不访问公共 DNS。Windows 由构建目标自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
