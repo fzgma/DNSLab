@@ -12,6 +12,7 @@ enum class NetworkOperation {
     WaitWrite,
     Send,
     Receive,
+    Connect,
 };
 
 enum class NetworkErrorCode {
@@ -20,6 +21,8 @@ enum class NetworkErrorCode {
     InvalidArgument,
     DatagramTruncated,
     IncompleteDatagram,
+    ConnectionClosed,
+    InvalidMessageLength,
 };
 
 struct NetworkError {

@@ -1,24 +1,11 @@
 #include "net/udp.hpp"
+#include "net/native_socket.hpp"
 
 #include <algorithm>
-#include <cstring>
 #include <limits>
 #include <utility>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
-#include <cerrno>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
+#if !defined(_WIN32)
 #include <sys/uio.h>
 #endif
 
@@ -27,81 +14,17 @@ namespace {
 
 constexpr std::size_t datagram_capacity = 65535;
 
-#if defined(_WIN32)
-using NativeSocket = SOCKET;
-using AddressLength = int;
-
-int last_error() noexcept { return ::WSAGetLastError(); }
-bool interrupted(int error) noexcept { return error == WSAEINTR; }
-bool would_block(int error) noexcept { return error == WSAEWOULDBLOCK; }
-#else
-using NativeSocket = int;
-using AddressLength = socklen_t;
-
-int last_error() noexcept { return errno; }
-bool interrupted(int error) noexcept { return error == EINTR; }
-bool would_block(int error) noexcept { return error == EAGAIN || error == EWOULDBLOCK; }
-#endif
-
-NetworkError invalid_argument(NetworkOperation operation) noexcept {
-    return {operation, 0, NetworkErrorCode::InvalidArgument};
-}
-
-NetworkError timed_out(NetworkOperation operation) noexcept {
-    return {operation, 0, NetworkErrorCode::TimedOut};
-}
-
-struct NativeAddress {
-    sockaddr_storage storage{};
-    AddressLength length{};
-};
-
-NativeAddress to_native(const Endpoint& endpoint) noexcept {
-    NativeAddress result;
-    if (const auto* bytes = std::get_if<Ipv4Address>(&endpoint.address)) {
-        sockaddr_in address{};
-        address.sin_family = AF_INET;
-        address.sin_port = htons(endpoint.port);
-        static_assert(sizeof(address.sin_addr) == sizeof(*bytes));
-        std::memcpy(&address.sin_addr, bytes->data(), bytes->size());
-        std::memcpy(&result.storage, &address, sizeof(address));
-        result.length = static_cast<AddressLength>(sizeof(address));
-    } else {
-        sockaddr_in6 address{};
-        address.sin6_family = AF_INET6;
-        address.sin6_port = htons(endpoint.port);
-        const auto& bytes6 = std::get<Ipv6Address>(endpoint.address);
-        static_assert(sizeof(address.sin6_addr) == sizeof(bytes6));
-        std::memcpy(&address.sin6_addr, bytes6.data(), bytes6.size());
-        std::memcpy(&result.storage, &address, sizeof(address));
-        result.length = static_cast<AddressLength>(sizeof(address));
-    }
-    return result;
-}
-
-std::expected<Endpoint, NetworkError>
-from_native(const sockaddr_storage& storage, AddressLength length,
-             NetworkOperation operation) {
-    if (storage.ss_family == AF_INET &&
-        length >= static_cast<AddressLength>(sizeof(sockaddr_in))) {
-        sockaddr_in address{};
-        std::memcpy(&address, &storage, sizeof(address));
-        Ipv4Address bytes{};
-        std::memcpy(bytes.data(), &address.sin_addr, bytes.size());
-        return Endpoint{bytes, ntohs(address.sin_port)};
-    }
-    if (storage.ss_family == AF_INET6 &&
-        length >= static_cast<AddressLength>(sizeof(sockaddr_in6))) {
-        sockaddr_in6 address{};
-        std::memcpy(&address, &storage, sizeof(address));
-        Ipv6Address bytes{};
-        std::memcpy(bytes.data(), &address.sin6_addr, bytes.size());
-        return Endpoint{bytes, ntohs(address.sin6_port)};
-    }
-    return std::unexpected(invalid_argument(operation));
-}
-
 } // namespace
+
+using detail::AddressLength;
+using detail::NativeSocket;
+using detail::from_native;
+using detail::interrupted;
+using detail::invalid_argument;
+using detail::last_error;
+using detail::timed_out;
+using detail::to_native;
+using detail::would_block;
 
 std::expected<void, NetworkError>
 wait_socket(const Socket& socket, WaitInterest interest, const Deadline& deadline) {

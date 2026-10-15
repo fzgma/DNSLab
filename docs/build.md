@@ -90,9 +90,9 @@ ctest --test-dir build-system --output-on-failure
 
 Ninja 等单配置生成器通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`。运行路径随生成器和配置变化：Ninja 为 `build/dnslab.exe`（Windows）或 `build/dnslab`（Linux），上述 MSVC 示例为 `build-msvc/Debug/dnslab.exe`。
 
-测试覆盖输入与报文处理、套接字生命周期、查询预算、UDP 收发、响应匹配和命令行基础行为，并使用本地模拟服务器验证 UDP 查询。单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒；预算单元测试使用固定时刻，传输与查询测试只使用本机资源、回环地址和临时端口，不访问公共 DNS。测试线程由 CMake 的 `Threads::Threads` 目标配置，Windows 自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+测试覆盖输入与报文处理、套接字生命周期、查询预算、UDP/TCP 收发、响应匹配和命令行基础行为，并使用本地模拟服务器验证查询与自动回退。单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒；预算单元测试使用固定时刻，传输与查询测试只使用本机资源、回环地址和临时端口，不访问公共 DNS。测试线程由 CMake 的 `Threads::Threads` 目标配置，Windows 自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
 
-CTest 使用三个互不重叠的标签：`smoke` 检查程序调用，`unit` 检查纯内存逻辑，`integration` 检查系统套接字、UDP 收发和本地模拟服务器。可以分别运行；多配置生成器额外传入 `-C Release` 或对应配置：
+CTest 使用三个互不重叠的标签：`smoke` 检查程序调用，`unit` 检查纯内存逻辑，`integration` 检查系统套接字、UDP/TCP 收发和本地模拟服务器。可以分别运行；多配置生成器额外传入 `-C Release` 或对应配置：
 
 ```bash
 ctest --test-dir build -L '^smoke$' --output-on-failure --no-tests=error

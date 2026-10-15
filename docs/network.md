@@ -1,6 +1,6 @@
 # 网络传输
 
-本文定义已实现的端点模型、套接字所有权、查询预算和 UDP 收发。输入规则见 [validation.md](validation.md)，响应匹配与单服务器查询用例见 [architecture.md](architecture.md)。TCP 连接、收发和截断回退尚未实现。
+本文定义已实现的端点模型、套接字所有权、查询预算和 UDP/TCP 收发。输入规则见 [validation.md](validation.md)，响应匹配与单服务器查询、自动回退用例见 [architecture.md](architecture.md)。
 
 所有接口位于 `dnslab::net`，核心层不打印提示，也不将网络错误解释为 DNS 响应码。
 
@@ -42,7 +42,8 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 | `Bind` | 绑定本机地址失败 |
 | `LocalEndpoint` | 读取本机地址失败 |
 | `WaitRead`、`WaitWrite` | 等待可读、可写失败或预算耗尽 |
-| `Send`、`Receive` | 发送、接收数据报失败或预算耗尽 |
+| `Send`、`Receive` | 发送、接收数据失败或预算耗尽 |
+| `Connect` | TCP 连接或连接结果检查失败、预算耗尽 |
 
 | 错误分类 | 含义 |
 | --- | --- |
@@ -51,6 +52,8 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 | `InvalidArgument` | 参数无效，例如无效套接字、目标端口为零或超长数据 |
 | `DatagramTruncated` | 数据报接收不完整，不能把前缀当成完整消息 |
 | `IncompleteDatagram` | 未完整发送一个数据报，不能拆成多次发送 |
+| `ConnectionClosed` | TCP 在完成所需字节前正常关闭，或发送无法继续 |
+| `InvalidMessageLength` | TCP 消息长度不在 12–65535 字节范围内 |
 
 系统调用失败后立即保存错误码，再清理资源，避免清理过程覆盖错误。主动检测到的错误通常使用系统码 0；平台报告的截断可以保留原生码。等待阶段的错误原样传递，不改写成发送或接收阶段；网络错误不能用 DNS RCODE 替代。
 
@@ -90,8 +93,26 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 传输层不重传、不验证 DNS 标志，也不根据 TC 触发 TCP。显式 UDP 查询可返回带 TC 标志的有效消息。
 
+## TCP 与消息边界
+
+`src/net/tcp.hpp` 接收调用方持有的非阻塞 TCP 套接字，复用与 UDP 相同的 `Deadline`。公共接口不暴露平台结构，连接或完整流操作失败后应关闭该套接字，不能把部分进度当作可重试的完整消息。
+
+| 接口 | 用途 |
+| --- | --- |
+| `connect_socket(socket, destination, deadline)` | 连接目标端点并确认成功，拒绝端口 0 |
+| `send_all(socket, bytes, deadline)` | 循环完成全部字节发送 |
+| `receive_exact(socket, bytes, deadline)` | 填满调用方提供的缓冲区，提前关闭即失败 |
+| `send_tcp_message(socket, bytes, deadline)` | 加两字节大端长度前缀并完整发送一个消息 |
+| `receive_tcp_message(socket, deadline)` | 读取长度前缀和恰好一个消息，不消费后续帧 |
+
+连接进行中时等待连接完成，再读取 `SO_ERROR`。Windows 同时检查可写与异常集合，因为失败连接可能只出现在异常集合；Linux 检查连接事件后读取挂起错误。普通读写等待不能代替连接结果验证，参见 [Winsock select](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-select) 与 [Linux connect](https://man7.org/linux/man-pages/man2/connect.2.html)。
+
+部分发送、部分读取、系统调用中断与暂时不可读写均继续使用原截止时间，操作前后检查是否到期。流接收返回零表示连接关闭，不能像 UDP 的空数据报一样成功；Linux 发送抑制 `SIGPIPE`，将对端关闭作为错误返回。空流缓冲区仅在套接字有效且预算未到期时成功。
+
+长度前缀不计入消息长度，采用 [RFC 1035 4.2.2](https://www.rfc-editor.org/rfc/rfc1035.html#section-4.2.2) 的两字节网络字节序。本项目消息必须至少容纳 12 字节 DNS Header，最多 65535 字节；收发都拒绝其他长度。接收先验证长度，再分配正文缓冲区。前缀或正文到一半关闭、超时，均不会返回部分消息；长度有效并不表示 DNS 内容有效，后续语义校验仍归应用层负责。
+
 ## 验证边界
 
 端点测试只进行内存转换；预算测试传入固定时刻，不使用真实休眠。套接字测试只创建本机资源，并使用回环地址验证非阻塞状态，不联系公共 DNS。创建、移动、关闭和析构必须同时验证资源仍归唯一对象所有。
 
-UDP 测试使用 IPv4/IPv6 回环地址和临时端口，验证地址转换、来源、字节保留、空数据报与截止时间；查询集成测试用本地模拟服务器验证有效响应、错误来源、无效消息和超时。TCP 与回退测试留待对应功能实现。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。
+UDP 测试使用 IPv4/IPv6 回环地址和临时端口，验证地址转换、来源、字节保留、空数据报与截止时间。TCP 测试验证连接、部分收发、消息边界、提前关闭与预算；查询集成测试使用本地模拟服务器验证响应匹配、错误恢复与自动回退。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。

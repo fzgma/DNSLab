@@ -34,7 +34,9 @@ add_library(dnslab_core STATIC
     src/net/socket.cpp
     src/net/deadline.cpp
     src/net/udp.cpp
+    src/net/tcp.cpp
     src/app/response_validator.cpp
+    src/app/query.cpp
     src/app/udp_query.cpp)
 target_include_directories(dnslab_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(dnslab_core PUBLIC cxx_std_23)
@@ -79,7 +81,12 @@ if(BUILD_TESTING)
     add_executable(dnslab_integration_tests
         tests/unit/socket_tests.cpp
         tests/unit/udp_tests.cpp
-        tests/integration/udp_query_tests.cpp)
+        tests/integration/udp_query_tests.cpp
+        tests/integration/tcp_transport_tests.cpp
+        tests/integration/tcp_query_tests.cpp
+        tests/integration/query_fallback_tests.cpp)
+    target_include_directories(dnslab_integration_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(dnslab_integration_tests PRIVATE
         dnslab_core Catch2::Catch2WithMain Threads::Threads)
     dnslab_enable_warnings(dnslab_integration_tests)
