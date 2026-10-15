@@ -1,12 +1,12 @@
 # DNS 报文编解码
 
-本文定义名称与报文处理的接口、边界、算法和错误约定。名称及压缩解码已实现；查询报文编码和完整消息解析待实现。查询输入规则统一见 [validation.md](validation.md)，与当前请求的匹配由 [architecture.md](architecture.md) 中的应用层负责。
+本文定义已实现的名称处理、查询报文编码和完整消息解析的接口、边界、算法和错误约定。查询输入规则统一见 [validation.md](validation.md)，与当前请求的匹配由 [architecture.md](architecture.md) 中待实现的应用层负责。
 
 ## 边界与接口
 
 模块只处理内存数据，不创建套接字、不读取系统设置、不打印日志。输入使用 `std::span<const std::byte>`，可恢复错误使用 `std::expected`；禁止将报文字节转换成未对齐整数指针或打包结构体。
 
-当前接口位于 `src/dns/name_codec.hpp`，命名空间为 `dnslab::dns`：
+名称接口位于 `src/dns/name_codec.hpp`，报文接口位于 `src/dns/wire_codec.hpp`，命名空间均为 `dnslab::dns`：
 
 | 接口 | 结果 |
 | --- | --- |
@@ -55,7 +55,7 @@
 
 名称起点可以大于 `0x3fff`，只有指针目标受 14 位限制。`consumed` 与展开长度必须独立：一个两字节指针可以引用完整的 255 字节名称；254 字节普通标签编码（含各标签长度字节）加两字节根指针也可以消耗 256 字节而展开为合法的 255 字节名称。
 
-## 完整消息模型（待实现）
+## 完整消息模型
 
 | 类型 | 内容 |
 | --- | --- |
@@ -66,7 +66,11 @@
 
 记录数据使用 A 的 4 字节地址、AAAA 的 16 字节地址、CNAME 的名称或不透明原始字节。保留未知类型、class 和 flags 位，不将 Additional 记录混入 Answer。
 
-建议后续接口：
+记录数据分别由 `AData::address`、`AaaaData::address`、`NameData::name` 和 `OpaqueData::bytes` 保存，`RData` 使用这四种类型的 `std::variant`。`DnsMessage` 的集合成员为 `questions`、`answers`、`authority` 和 `additional`；Question 的 class 字段为 `qclass`，记录的 class 字段为 `rr_class`。
+
+`DnsHeader` 保存 `id`、`flags`，通过 `is_response()`、`opcode()`、`authoritative_answer()`、`truncated()`、`recursion_desired()`、`recursion_available()`、`authenticated_data()`、`checking_disabled()` 和 `rcode()` 读取标志；访问器不修改原始值。
+
+报文接口：
 
 ```cpp
 std::expected<DnsMessage, DnsParseError>
@@ -81,7 +85,7 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
 
 1. 固定 Header 为 12 字节；更短报 `PacketTooShort`，整包超过 65535 字节报 `PacketTooLarge`。
 2. 按 QDCOUNT、ANCOUNT、NSCOUNT、ARCOUNT 顺序读取各集合；不能根据不可信 count 提前大量 `reserve`。
-3. 每个字段、名称、记录固定部分和 RDATA 均先检查剩余长度。声明的项目必须全部解析完成。
+3. 每个字段、名称、记录固定部分和 RDATA 均先检查剩余长度。声明的项目必须全部解析完成；需要开始下一条目但已到包尾时返回 `SectionCountMismatch`，条目已开始但不完整时保留具体的名称或字段错误。
 4. 成功后集合长度表达实际数量，无需重复存储 Header 计数。
 5. 所有集合处理完成后仍有剩余字节，返回 `TrailingData`。
 
@@ -106,7 +110,7 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
 
 Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD 按参数设置。QDCOUNT 为 1，其余计数为 0。QNAME 不压缩，后接大端 QTYPE 和 QCLASS；不附加 EDNS 记录。
 
-编码前校验名称不变量、查询类型和 class，不通过截断或默认替换接受无效输入。
+编码前依次校验名称不变量、查询类型和 class；同一输入有多个错误时按此顺序返回首个错误，不通过截断或默认替换接受无效输入。名称处理沿用 `encode_name` 的原始标签规则，不在此重复用户输入字符校验。
 
 ## 错误约定
 
@@ -114,11 +118,16 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 
 名称编码错误包含 `code` 和 `label_index`：`EmptyLabel`、`LabelTooLong`、`NameTooLong` 指向首个错误标签或使总长度超限的标签。
 
+查询编码的 `UnsupportedQueryType` 和 `UnsupportedQueryClass` 分别表示查询类型不是 A/AAAA 或 class 不是 IN；这两种错误的 `label_index` 固定为 0，不表示名称出错。
+
 解析错误包含稳定 `code` 和相对于整个报文的字节 `offset`，不携带动态说明文本。
 
-| 已实现错误 | 位置 |
+| 错误 | 位置 |
 | --- | --- |
-| `FieldOutOfBounds` | 请求的整数读取偏移 |
+| `PacketTooShort` | 输入大小，即缺失的首字节位置 |
+| `PacketTooLarge` | 65535，即超出报文大小上限的首字节位置 |
+| `SectionCountMismatch` | 需要开始下一条目但已经到达的包尾 |
+| `FieldOutOfBounds` | 请求的整数读取偏移；RDATA 越界时为 RDATA 起点 |
 | `NameOutOfBounds` | 缺失结构字节的位置，或数据截断标签的长度字节 |
 | `ReservedLabelEncoding` | 保留编码字节 |
 | `CompressionPointerTruncated` | 指针首字节 |
@@ -126,13 +135,16 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 | `CompressionPointerNotBackward` | 非向后引用的指针首字节 |
 | `CompressionLoop` | 重复访问的位置 |
 | `ExpandedNameTooLong` | 使展开长度超限的标签起点 |
+| `InvalidRdataLength` | IN A/AAAA 记录的 RDLENGTH 字段起点 |
+| `RdataLengthMismatch` | CNAME 的 RDATA 起点 |
+| `TrailingData` | 完成所有集合后第一个多余字节的位置 |
 
-消息解析阶段还需增加短包、超长包、RDATA 长度错误、section 数量不符和尾随数据等错误。网络错误与 DNS RCODE 使用独立模型。
+记录先验证 RDATA 是否完整位于报文内，再验证具体类型的长度。CNAME 名称解码失败时保留名称错误；解码成功但占用长度不符时返回 `RdataLengthMismatch`。网络错误与 DNS RCODE 使用独立模型。
 
 ## 验证要求
 
 名称测试覆盖黄金字节、根名称、63/64 与 255/256 边界、每处截断、非零和极大偏移、原始字节保留、安全显示及大小写比较。压缩测试覆盖独立指针、标签加指针、多级引用、向后循环、最大目标、长合法链、实际消耗长度和展开长度。
 
-后续消息测试须覆盖固定 ID 的查询黄金样本、RD 开关、A/AAAA/CNAME、压缩 RDATA、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
+消息测试覆盖固定 ID 的查询黄金样本、RD 开关、A/AAAA/CNAME、压缩 RDATA、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
 
 测试使用内存数据，不依赖公共 DNS。单元测试设置运行上限以暴露死循环；支持的工具链可增加模糊测试和内存检查。实际运行结果见 [todo.md](todo.md)，不把计划中的检查写成已执行。

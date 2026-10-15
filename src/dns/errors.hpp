@@ -25,10 +25,13 @@ enum class DnsEncodeErrorCode {
     EmptyLabel,
     LabelTooLong,
     NameTooLong,
+    UnsupportedQueryType,
+    UnsupportedQueryClass,
 };
 
 struct DnsEncodeError {
     DnsEncodeErrorCode code;
+    // Unsupported query type/class errors use zero; no label is implicated.
     std::size_t label_index;
 };
 
@@ -41,6 +44,12 @@ enum class DnsParseErrorCode {
     CompressionPointerNotBackward,
     CompressionLoop,
     ExpandedNameTooLong,
+    PacketTooShort, // offset is packet.size().
+    PacketTooLarge, // offset is the maximum packet size, 65535.
+    SectionCountMismatch, // offset is the missing entry's cursor at packet end.
+    InvalidRdataLength, // offset is the RDLENGTH field's first byte.
+    RdataLengthMismatch, // offset is the RDATA field's first byte.
+    TrailingData, // offset is the first unconsumed byte.
 };
 
 struct DnsParseError {
