@@ -109,6 +109,6 @@ ctest --test-dir build-system --output-on-failure
 
 ## 测试范围
 
-测试覆盖大端 16 位 / 32 位整数读写、非零偏移、空输入、字节不足、末尾和超出输入范围的偏移，以及 CLI 基础行为。**所有测试离线运行，不访问公共 DNS。**
+测试覆盖整数读写、域名输入校验、普通名称编码与解码、名称长度与偏移边界、安全显示和大小写比较，以及 CLI 基础行为。**所有测试离线运行，不访问公共 DNS。**
 
 后续实现顺序及边界参见 [工程基线清单](todo.md)、[架构设计](DNSLab_Architecture_v0.1.md) 和 [Wire Codec 设计](DNSLab_WireCodec_Design_v0.1.md)。

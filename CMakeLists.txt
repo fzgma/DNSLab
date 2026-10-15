@@ -25,7 +25,9 @@ endif()
 
 find_package(CLI11 CONFIG REQUIRED)
 
-add_library(dnslab_core STATIC src/dns/byte_utils.cpp)
+add_library(dnslab_core STATIC
+    src/dns/byte_utils.cpp
+    src/dns/name_codec.cpp)
 target_include_directories(dnslab_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(dnslab_core PUBLIC cxx_std_23)
 
@@ -47,7 +49,9 @@ dnslab_enable_warnings(dnslab)
 
 if(BUILD_TESTING)
     find_package(Catch2 3 CONFIG REQUIRED)
-    add_executable(dnslab_tests tests/unit/byte_utils_tests.cpp)
+    add_executable(dnslab_tests
+        tests/unit/byte_utils_tests.cpp
+        tests/unit/name_codec_tests.cpp)
     target_link_libraries(dnslab_tests PRIVATE dnslab_core Catch2::Catch2WithMain)
     dnslab_enable_warnings(dnslab_tests)
 
