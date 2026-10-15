@@ -1,0 +1,10 @@
+{
+  "name": "dnslab",
+  "version": "0.1.0",
+  "description": "Cross-platform DNS diagnostic CLI: C++23 bootstrap",
+  "builtin-baseline": "20ceb8adbf0504d4b0d5e4058a32f9d4fc896391",
+  "dependencies": [
+    "cli11",
+    "catch2"
+  ]
+}
