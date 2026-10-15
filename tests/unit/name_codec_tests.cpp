@@ -57,12 +57,50 @@ TEST_CASE("ASCII name input preserves case and accepts a single trailing dot",
     }
 }
 
-TEST_CASE("ASCII name input accepts host labels and existing Punycode",
+TEST_CASE("ASCII name input accepts numeric labels and existing Punycode",
           "[name_codec][input]") {
-    const auto result = parse_ascii_name("A0-z.xn--bcher-kva.42");
-    REQUIRE(result.has_value());
-    const std::vector<std::string> expected{"A0-z", "xn--bcher-kva", "42"};
-    CHECK(result->labels == expected);
+    struct Sample {
+        std::string_view input;
+        std::vector<std::string> labels;
+    };
+    const std::array samples{
+        Sample{"A0-z.xn--bcher-kva.42", {"A0-z", "xn--bcher-kva", "42"}},
+        Sample{"123.example", {"123", "example"}},
+        Sample{"a.123.", {"a", "123"}},
+        Sample{"1-2", {"1-2"}},
+    };
+
+    for (const auto& sample : samples) {
+        CAPTURE(sample.input);
+        const auto result = parse_ascii_name(sample.input);
+        REQUIRE(result.has_value());
+        CHECK(result->labels == sample.labels);
+    }
+}
+
+TEST_CASE("ASCII query names reject inputs made only of digits and dots",
+          "[name_codec][input]") {
+    for (const auto input : {"0", "0.", "123", "123.", "1.2.3", "1.2.3.",
+                             "1.2.3.4", "1.2.3.4.", "999.1.1.1", "999.1.1.1."}) {
+        CAPTURE(input);
+        check_input_error(input, NameInputErrorCode::NumericOnlyName, 0);
+    }
+}
+
+TEST_CASE("Numeric query names still report syntax and length errors first",
+          "[name_codec][input][bounds]") {
+    check_input_error("1..2", NameInputErrorCode::EmptyLabel, 2);
+    check_input_error("123 ", NameInputErrorCode::InvalidCharacter, 3);
+    check_input_error(std::string(63, '1'), NameInputErrorCode::NumericOnlyName, 0);
+    check_input_error(std::string(64, '1'), NameInputErrorCode::LabelTooLong, 0);
+
+    const std::string prefix = std::string(63, '1') + "." +
+                               std::string(63, '2') + "." +
+                               std::string(63, '3') + ".";
+    check_input_error(prefix + std::string(61, '4'),
+                      NameInputErrorCode::NumericOnlyName, 0);
+    check_input_error(prefix + std::string(62, '4'),
+                      NameInputErrorCode::NameTooLong, 192);
 }
 
 TEST_CASE("The root name has no labels and a one-byte wire representation",
@@ -102,10 +140,17 @@ TEST_CASE("ASCII name input rejects invalid bytes at their original offsets",
     const std::array samples{
         Sample{" a", 0}, Sample{"a ", 1}, Sample{"a\tb", 1},
         Sample{"a\nb", 1}, Sample{"a\rb", 1}, Sample{"a_b", 1},
-        Sample{"a/b", 1}, Sample{"a:b", 1}, Sample{"a\\046b", 1},
+        Sample{"a\\046b", 1}, Sample{"a\x1B" "b", 1}, Sample{"a\x7F" "b", 1},
+        Sample{"https://example.com", 5}, Sample{"example.com:53", 11},
+        Sample{"user@example.com", 4}, Sample{"example.com/path", 11},
+        Sample{"2001:db8::1", 4}, Sample{"[2001:db8::1]", 0},
         Sample{std::string{"ab\0cd", 5}, 2},
         Sample{std::string{"ex\xC3\xA9.com"}, 2},
         Sample{std::string{"a"} + static_cast<char>(0xFF), 1},
+        Sample{"example\xEF\xBC\x8E" "com", 7}, // U+FF0E fullwidth full stop.
+        Sample{"\xEF\xBC\xA1" ".example", 0}, // U+FF21 fullwidth A.
+        Sample{"ex\xE2\x80\x8B" "ample.com", 2}, // U+200B zero width space.
+        Sample{"a\xC2\xA0" "b", 1}, // U+00A0 no-break space.
     };
 
     for (const auto& sample : samples) {
@@ -173,6 +218,24 @@ TEST_CASE("Name encoding matches the example.com golden wire bytes",
         REQUIRE(encoded.has_value());
         check_bytes(encoded->bytes, example_wire_name());
     }
+}
+
+TEST_CASE("Numeric wire names remain valid independently of query input rules",
+          "[name_codec][encode][decode]") {
+    const DnsName name{{"1", "2", "3", "4"}};
+    const Packet wire{std::byte{1}, std::byte{0x31}, std::byte{1}, std::byte{0x32},
+                      std::byte{1}, std::byte{0x33}, std::byte{1}, std::byte{0x34},
+                      std::byte{0}};
+
+    const auto encoded = encode_name(name);
+    REQUIRE(encoded.has_value());
+    check_bytes(encoded->bytes, wire);
+
+    const auto decoded = decode_name(wire, 0);
+    REQUIRE(decoded.has_value());
+    CHECK(decoded->name.labels == name.labels);
+    CHECK(decoded->consumed == 9);
+    CHECK(format_name(decoded->name) == "1.2.3.4.");
 }
 
 TEST_CASE("Name encoding validates labels supplied without the input parser",

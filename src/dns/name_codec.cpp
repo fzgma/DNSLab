@@ -71,6 +71,9 @@ parse_ascii_name(std::string_view input) {
         }
         label_start = dot + 1;
     }
+    if (input.find_first_not_of("0123456789.") == std::string_view::npos) {
+        return std::unexpected(NameInputError{NameInputErrorCode::NumericOnlyName, 0});
+    }
     return name;
 }
 

@@ -12,6 +12,7 @@
 namespace dnslab::dns {
 
 // Accepts ASCII hostname labels and an optional trailing dot; "." is the root.
+// Rejects names made only of digits and dots after syntax and length validation.
 [[nodiscard]] std::expected<DnsName, NameInputError>
 parse_ascii_name(std::string_view input);
 

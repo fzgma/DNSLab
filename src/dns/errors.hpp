@@ -11,11 +11,13 @@ enum class NameInputErrorCode {
     NameTooLong,
     InvalidCharacter,
     HyphenAtBoundary,
+    NumericOnlyName,
 };
 
 struct NameInputError {
     NameInputErrorCode code;
     // Byte offset in the input; length errors identify the offending label start.
+    // NumericOnlyName identifies the entire input and uses offset zero.
     std::size_t offset;
 };
 
