@@ -15,6 +15,7 @@ namespace {
 
 using namespace dnslab::dns;
 
+/// 断言读取以字段越界失败，并保留请求偏移。
 template <typename T>
 void require_out_of_bounds(const std::expected<T, DnsParseError>& result,
                            std::size_t offset) {
@@ -23,6 +24,7 @@ void require_out_of_bounds(const std::expected<T, DnsParseError>& result,
     CHECK(result.error().offset == offset);
 }
 
+/// 逐字节比较报文和期望值，并在失败时显示字节索引。
 void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     REQUIRE(packet.size() == expected.size());
     for (std::size_t index = 0; index < expected.size(); ++index) {
@@ -32,7 +34,7 @@ void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     }
 }
 
-TEST_CASE("read_u16_be reads network byte order", "[byte_utils][read]") {
+TEST_CASE("read_u16_be 按网络字节序读取整数", "[byte_utils][read]") {
     struct Sample {
         std::array<std::byte, 2> bytes;
         std::uint16_t value;
@@ -52,7 +54,7 @@ TEST_CASE("read_u16_be reads network byte order", "[byte_utils][read]") {
     }
 }
 
-TEST_CASE("read_u32_be reads network byte order", "[byte_utils][read]") {
+TEST_CASE("read_u32_be 按网络字节序读取整数", "[byte_utils][read]") {
     struct Sample {
         std::array<std::byte, 4> bytes;
         std::uint32_t value;
@@ -76,7 +78,7 @@ TEST_CASE("read_u32_be reads network byte order", "[byte_utils][read]") {
     }
 }
 
-TEST_CASE("integer reads honor a nonzero offset and allow the exact end",
+TEST_CASE("整数读取支持非零偏移并允许恰好到达报文末尾",
           "[byte_utils][read]") {
     const Packet packet{std::byte{0xAA}, std::byte{0x12}, std::byte{0x34},
                         std::byte{0x56}, std::byte{0x78}};
@@ -94,7 +96,7 @@ TEST_CASE("integer reads honor a nonzero offset and allow the exact end",
     CHECK(*whole_value == 0x12345678U);
 }
 
-TEST_CASE("read_u16_be rejects every truncated field", "[byte_utils][bounds]") {
+TEST_CASE("read_u16_be 拒绝所有截断字段", "[byte_utils][bounds]") {
     const std::array packet{std::byte{0xAA}, std::byte{0x12}, std::byte{0x34}};
     const std::span<const std::byte> bytes{packet};
 
@@ -105,7 +107,7 @@ TEST_CASE("read_u16_be rejects every truncated field", "[byte_utils][bounds]") {
     }
 }
 
-TEST_CASE("read_u32_be rejects every truncated field", "[byte_utils][bounds]") {
+TEST_CASE("read_u32_be 拒绝所有截断字段", "[byte_utils][bounds]") {
     const std::array packet{std::byte{0xAA}, std::byte{0x12}, std::byte{0x34},
                             std::byte{0x56}, std::byte{0x78}};
     const std::span<const std::byte> bytes{packet};
@@ -117,7 +119,7 @@ TEST_CASE("read_u32_be rejects every truncated field", "[byte_utils][bounds]") {
     }
 }
 
-TEST_CASE("integer reads reject out-of-range offsets without overflow",
+TEST_CASE("整数读取拒绝越界偏移且不发生溢出",
           "[byte_utils][bounds]") {
     const Packet packet{std::byte{0x12}, std::byte{0x34}, std::byte{0x56},
                         std::byte{0x78}};
@@ -134,14 +136,14 @@ TEST_CASE("integer reads reject out-of-range offsets without overflow",
     }
 }
 
-TEST_CASE("append_u16_be writes network byte order", "[byte_utils][append]") {
+TEST_CASE("append_u16_be 按网络字节序写入整数", "[byte_utils][append]") {
     Packet packet;
     append_u16_be(packet, 0x1234);
     const std::array expected{std::byte{0x12}, std::byte{0x34}};
     check_bytes(packet, expected);
 }
 
-TEST_CASE("append_u32_be writes network byte order", "[byte_utils][append]") {
+TEST_CASE("append_u32_be 按网络字节序写入整数", "[byte_utils][append]") {
     Packet packet;
     append_u32_be(packet, 0x12345678U);
     const std::array expected{std::byte{0x12}, std::byte{0x34}, std::byte{0x56},
@@ -149,7 +151,7 @@ TEST_CASE("append_u32_be writes network byte order", "[byte_utils][append]") {
     check_bytes(packet, expected);
 }
 
-TEST_CASE("append_u16_be preserves the prefix and all value bits",
+TEST_CASE("append_u16_be 保留既有前缀和数值的全部位",
           "[byte_utils][append]") {
     Packet packet{std::byte{0xAA}, std::byte{0x55}, std::byte{0xCC}};
     append_u16_be(packet, 0x0000);
@@ -165,7 +167,7 @@ TEST_CASE("append_u16_be preserves the prefix and all value bits",
     check_bytes(packet, expected);
 }
 
-TEST_CASE("append_u32_be preserves the prefix and all value bits",
+TEST_CASE("append_u32_be 保留既有前缀和数值的全部位",
           "[byte_utils][append]") {
     Packet packet{std::byte{0xAA}, std::byte{0x55}, std::byte{0xCC}};
     append_u32_be(packet, 0x00000000U);
@@ -181,4 +183,4 @@ TEST_CASE("append_u32_be preserves the prefix and all value bits",
     check_bytes(packet, expected);
 }
 
-} // namespace
+} // 命名空间

@@ -12,6 +12,7 @@ namespace {
 
 using namespace dnslab::dns;
 
+/// 构造事务 ID 为 0x1234 的 example.com A 查询基准报文。
 Packet example_a_query() {
     return {
         std::byte{0x12}, std::byte{0x34}, std::byte{0x01}, std::byte{0x00},
@@ -25,6 +26,7 @@ Packet example_a_query() {
     };
 }
 
+/// 逐字节比较查询报文与期望编码并记录索引。
 void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     REQUIRE(packet.size() == expected.size());
     for (std::size_t index = 0; index < expected.size(); ++index) {
@@ -34,7 +36,7 @@ void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     }
 }
 
-TEST_CASE("Query encoding matches the example.com A golden message",
+TEST_CASE("查询编码匹配 example.com 的 A 查询基准报文",
           "[query_encoder]") {
     const DnsQuestion question{DnsName{{"example", "com"}}, 1, 1};
     const auto result = encode_query(question, 0x1234);
@@ -42,7 +44,7 @@ TEST_CASE("Query encoding matches the example.com A golden message",
     check_bytes(*result, example_a_query());
 }
 
-TEST_CASE("A and AAAA queries honor both recursion flag states",
+TEST_CASE("A 和 AAAA 查询遵守两种递归标志状态",
           "[query_encoder]") {
     for (const auto type : {std::uint16_t{1}, std::uint16_t{28}}) {
         for (const bool recursion_desired : {false, true}) {
@@ -59,7 +61,7 @@ TEST_CASE("A and AAAA queries honor both recursion flag states",
     }
 }
 
-TEST_CASE("Query encoding preserves caller-supplied transaction IDs",
+TEST_CASE("查询编码保留调用方提供的事务 ID",
           "[query_encoder]") {
     struct Sample {
         std::uint16_t id;
@@ -83,7 +85,7 @@ TEST_CASE("Query encoding preserves caller-supplied transaction IDs",
     }
 }
 
-TEST_CASE("Query encoding accepts the root name",
+TEST_CASE("查询编码接受根名",
           "[query_encoder]") {
     const DnsQuestion question{DnsName{}, 1, 1};
     const Packet expected{
@@ -98,7 +100,7 @@ TEST_CASE("Query encoding accepts the root name",
     check_bytes(*result, expected);
 }
 
-TEST_CASE("Query encoding accepts a full 255-byte uncompressed name",
+TEST_CASE("查询编码接受完整的 255 字节未压缩名称",
           "[query_encoder][bounds]") {
     const DnsQuestion question{
         DnsName{{std::string(63, 'a'), std::string(63, 'a'),
@@ -124,7 +126,7 @@ TEST_CASE("Query encoding accepts a full 255-byte uncompressed name",
     check_bytes(*result, expected);
 }
 
-TEST_CASE("Query encoding preserves arbitrary label octets",
+TEST_CASE("查询编码保留任意标签字节",
           "[query_encoder]") {
     const std::string label{'\0', static_cast<char>(27), '.', '\\',
                             static_cast<char>(0xC0), static_cast<char>(0xFF), 'A'};
@@ -143,7 +145,7 @@ TEST_CASE("Query encoding preserves arbitrary label octets",
     check_bytes(*result, expected);
 }
 
-TEST_CASE("Query encoding does not apply numeric hostname input restrictions",
+TEST_CASE("查询编码不应用纯数字主机名的输入限制",
           "[query_encoder]") {
     const DnsQuestion question{DnsName{{"123"}}, 1, 1};
     const Packet expected{
@@ -159,7 +161,7 @@ TEST_CASE("Query encoding does not apply numeric hostname input restrictions",
     check_bytes(*result, expected);
 }
 
-TEST_CASE("Query name errors retain their label index before type and class checks",
+TEST_CASE("查询名称错误先于类型和类别检查并保留标签索引",
           "[query_encoder][bounds]") {
     struct Sample {
         DnsName name;
@@ -186,7 +188,7 @@ TEST_CASE("Query name errors retain their label index before type and class chec
     }
 }
 
-TEST_CASE("Unsupported query types fail before query class validation",
+TEST_CASE("不支持的查询类型先于查询类别检查报错",
           "[query_encoder]") {
     for (const auto type : {std::uint16_t{0}, std::uint16_t{5},
                             std::uint16_t{255}, std::uint16_t{65535}}) {
@@ -201,7 +203,7 @@ TEST_CASE("Unsupported query types fail before query class validation",
     }
 }
 
-TEST_CASE("Query encoding only accepts the IN class",
+TEST_CASE("查询编码仅接受 IN 类别",
           "[query_encoder]") {
     for (const auto type : {std::uint16_t{1}, std::uint16_t{28}}) {
         for (const auto qclass : {std::uint16_t{0}, std::uint16_t{3},
@@ -216,4 +218,4 @@ TEST_CASE("Query encoding only accepts the IN class",
     }
 }
 
-} // namespace
+} // 命名空间

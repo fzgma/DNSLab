@@ -128,7 +128,8 @@ TCP 消息带两字节长度前缀。实现必须完成部分发送、前缀读�
 
 ## 构建与依赖
 
-- 使用 C++23，要求 `std::expected` 和 `std::span`；关闭编译器语言扩展。
+- 使用 C++23，要求 `std::expected`、`std::span` 与 `std::print`；关闭编译器语言扩展。
+- 终端输出统一使用 `std::print` / `std::println`，文本格式化使用 `std::format`；中文提示与函数说明的要求见[代码风格](style.md)。
 - CMake 构建 `dnslab_core`、`dnslab`、`dnslab_tests` 和 `dnslab_integration_tests`；CTest 按 `smoke`、`unit`、`integration` 标签执行。
 - Linux 持续集成只编译一次，产物交给 Ubuntu、Debian、Arch 分别运行；`tests/runtime` 只注册已有产物的测试，不查找编译器或重新编译。环境和执行入口见[构建说明](build.md#持续集成)。
 - 使用 CLI11、Catch2 和带 TLS、HTTP/2、c-ares 异步解析支持的 libcurl；JSON 报告开始实现时才引入相应依赖。

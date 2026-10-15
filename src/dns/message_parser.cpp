@@ -10,6 +10,7 @@
 namespace dnslab::dns {
 namespace {
 
+/// 从当前游标读取 16 位字段，仅在读取成功后推进游标。
 std::expected<std::uint16_t, DnsParseError>
 read_next_u16(std::span<const std::byte> packet, std::size_t& cursor) {
     auto value = read_u16_be(packet, cursor);
@@ -19,6 +20,7 @@ read_next_u16(std::span<const std::byte> packet, std::size_t& cursor) {
     return value;
 }
 
+/// 从当前游标读取 32 位字段，仅在读取成功后推进游标。
 std::expected<std::uint32_t, DnsParseError>
 read_next_u32(std::span<const std::byte> packet, std::size_t& cursor) {
     auto value = read_u32_be(packet, cursor);
@@ -28,6 +30,7 @@ read_next_u32(std::span<const std::byte> packet, std::size_t& cursor) {
     return value;
 }
 
+/// 解析问题名称、类型和类别，保留未知类型及类别的原始数值。
 std::expected<DnsQuestion, DnsParseError>
 parse_question(std::span<const std::byte> packet, std::size_t& cursor) {
     auto name = decode_name(packet, cursor);
@@ -47,6 +50,7 @@ parse_question(std::span<const std::byte> packet, std::size_t& cursor) {
     return DnsQuestion{std::move(name->name), *type, *qclass};
 }
 
+/// 解析一条资源记录，并按类型和类别解码或保留原始 RDATA。
 std::expected<ResourceRecord, DnsParseError>
 parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
     auto owner = decode_name(packet, cursor);
@@ -73,6 +77,7 @@ parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
         return std::unexpected(rdlength.error());
     }
 
+    // 先保证声明的 RDATA 全部位于报文内，再验证已知类型的固定长度。
     const auto rdata_start = cursor;
     if (*rdlength > packet.size() - rdata_start) {
         return std::unexpected(DnsParseError{
@@ -97,6 +102,7 @@ parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
         std::copy(bytes.begin(), bytes.end(), address.address.begin());
         rdata = address;
     } else if (*type == 5) {
+        // CNAME 可跨字段引用名称，但原路径消费长度必须与 RDLENGTH 完全相同。
         auto name = decode_name(packet, rdata_start);
         if (!name) {
             return std::unexpected(name.error());
@@ -115,6 +121,7 @@ parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
                           std::move(rdata)};
 }
 
+/// 逐条读取指定记录区，只有新条目恰好缺失于报文末尾时报告计数不符。
 std::expected<void, DnsParseError>
 parse_records(std::span<const std::byte> packet, std::size_t& cursor,
               std::uint16_t count, std::vector<ResourceRecord>& records) {
@@ -132,8 +139,9 @@ parse_records(std::span<const std::byte> packet, std::size_t& cursor,
     return {};
 }
 
-} // namespace
+} // 命名空间
 
+/// 校验报文总长后解析四个记录区，并拒绝未被计数覆盖的尾随字节。
 std::expected<DnsMessage, DnsParseError>
 parse_message(std::span<const std::byte> packet) {
     constexpr std::size_t header_length = 12;
@@ -147,13 +155,14 @@ parse_message(std::span<const std::byte> packet) {
             DnsParseErrorCode::PacketTooLarge, max_packet_length});
     }
 
-    // The complete fixed header was checked above; these reads cannot fail.
+    // 上方已保证固定报文头完整，因此这些定长读取不会失败。
     DnsMessage message;
     message.header = DnsHeader{*read_u16_be(packet, 0), *read_u16_be(packet, 2)};
     const std::array counts{*read_u16_be(packet, 4), *read_u16_be(packet, 6),
                             *read_u16_be(packet, 8), *read_u16_be(packet, 10)};
     std::size_t cursor = header_length;
 
+    // 计数来自不可信报文，逐条追加而不按声明数量提前大量分配。
     for (std::size_t index = 0; index < counts[0]; ++index) {
         if (cursor == packet.size()) {
             return std::unexpected(DnsParseError{
@@ -182,4 +191,4 @@ parse_message(std::span<const std::byte> packet) {
     return message;
 }
 
-} // namespace dnslab::dns
+} // 命名空间 dnslab::dns

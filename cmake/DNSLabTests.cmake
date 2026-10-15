@@ -2,8 +2,7 @@ include_guard(GLOBAL)
 
 include(Catch)
 
-# Shared by the normal build and the compiler-free runtime project. Official
-# Catch discovery handles escaping and invokes each case separately on its host.
+# 为正常构建与仅运行产物的工程统一注册测试，每个用例在当前系统上单独执行。
 function(dnslab_register_tests cli_target unit_target integration_target version)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     catch_discover_tests(${unit_target}
@@ -28,13 +27,13 @@ function(dnslab_register_tests cli_target unit_target integration_target version
             RESULT_VARIABLE discovery_result OUTPUT_VARIABLE cases
             ERROR_VARIABLE discovery_error OUTPUT_STRIP_TRAILING_WHITESPACE)
         if(NOT discovery_result EQUAL 0 OR cases STREQUAL "")
-            message(FATAL_ERROR "${suite} test discovery failed: ${discovery_error}")
+            message(FATAL_ERROR "发现 ${suite} 测试用例失败：${discovery_error}")
         endif()
         string(REPLACE "\r\n" "\n" cases "${cases}")
         string(REPLACE "\n" ";" cases "${cases}")
         foreach(case IN LISTS cases)
             if(NOT case MATCHES "^[a-z0-9_]+$")
-                message(FATAL_ERROR "Invalid ${suite} test name: ${case}")
+                message(FATAL_ERROR "${suite} 测试名称无效：${case}")
             endif()
             add_test(NAME "cli_${case}"
                 COMMAND "${Python3_EXECUTABLE}" "${script}"

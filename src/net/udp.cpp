@@ -14,7 +14,7 @@ namespace {
 
 constexpr std::size_t datagram_capacity = 65535;
 
-} // namespace
+} // 命名空间
 
 using detail::AddressLength;
 using detail::NativeSocket;
@@ -26,6 +26,7 @@ using detail::timed_out;
 using detail::to_native;
 using detail::would_block;
 
+/// 使用平台等待接口监视指定方向，所有重试共享原截止时间。
 std::expected<void, NetworkError>
 wait_socket(const Socket& socket, WaitInterest interest, const Deadline& deadline) {
     NetworkOperation operation;
@@ -58,7 +59,7 @@ wait_socket(const Socket& socket, WaitInterest interest, const Deadline& deadlin
 #if defined(_WIN32)
         fd_set ready;
         FD_ZERO(&ready);
-        FD_SET(handle, &ready); // Winsock stores handles in an array, not a bitmap.
+        FD_SET(handle, &ready); // Winsock 将句柄存入数组，不以句柄值索引位图。
         timeval timeout{};
         timeout.tv_sec = milliseconds / 1000;
         timeout.tv_usec = (milliseconds % 1000) * 1000;
@@ -82,7 +83,7 @@ wait_socket(const Socket& socket, WaitInterest interest, const Deadline& deadlin
             return std::unexpected(NetworkError{operation, error});
         }
         if (result == 0) {
-            continue; // Recompute the same budget after a clamped or early timeout.
+            continue; // 等待时长被截短或提前到期时，重新计算原预算的剩余时间。
         }
 #if !defined(_WIN32)
         if ((descriptor.revents & POLLNVAL) != 0) {
@@ -92,11 +93,12 @@ wait_socket(const Socket& socket, WaitInterest interest, const Deadline& deadlin
             continue;
         }
 #endif
-        // Readiness may also signal a pending socket error; the next I/O reports it.
+        // 就绪也可能表示挂起的套接字错误，由下一次读写返回具体原因。
         return {};
     }
 }
 
+/// 绑定指定本地端点，并立即保存系统调用失败时的错误码。
 std::expected<void, NetworkError>
 bind_socket(const Socket& socket, const Endpoint& endpoint) {
     if (!socket.valid()) {
@@ -113,6 +115,7 @@ bind_socket(const Socket& socket, const Endpoint& endpoint) {
     return {};
 }
 
+/// 查询实际本地地址，并将原生结构转换为可移植端点。
 std::expected<Endpoint, NetworkError> local_endpoint(const Socket& socket) {
     if (!socket.valid()) {
         return std::unexpected(invalid_argument(NetworkOperation::LocalEndpoint));
@@ -128,6 +131,7 @@ std::expected<Endpoint, NetworkError> local_endpoint(const Socket& socket) {
     return from_native(address, length, NetworkOperation::LocalEndpoint);
 }
 
+/// 在固定预算内原子发送一个 UDP 数据报，部分发送视为错误。
 std::expected<void, NetworkError>
 send_datagram(const Socket& socket, const Endpoint& destination,
               std::span<const std::byte> bytes, const Deadline& deadline) {
@@ -177,6 +181,7 @@ send_datagram(const Socket& socket, const Endpoint& destination,
     }
 }
 
+/// 在固定预算内接收完整 UDP 数据报，并检查两平台的截断标志。
 std::expected<Datagram, NetworkError>
 receive_datagram(const Socket& socket, const Deadline& deadline) {
     constexpr auto operation = NetworkOperation::Receive;
@@ -224,6 +229,7 @@ receive_datagram(const Socket& socket, const Deadline& deadline) {
         }
 #endif
         if (received >= 0) {
+            // 零字节 UDP 数据报合法，不能按 TCP 的连接关闭语义处理。
             if (static_cast<std::size_t>(received) > bytes.size()) {
                 return std::unexpected(NetworkError{
                     operation, 0, NetworkErrorCode::DatagramTruncated});
@@ -249,4 +255,4 @@ receive_datagram(const Socket& socket, const Deadline& deadline) {
     }
 }
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

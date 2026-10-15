@@ -23,10 +23,12 @@ struct QueryContext {
     net::Deadline deadline;
 };
 
+/// 计算从指定单调时钟起点至今的微秒耗时。
 std::chrono::microseconds elapsed_since(Clock::time_point started_at) {
     return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started_at);
 }
 
+/// 区分完全未获响应的超时与收到无效响应后耗尽预算。
 QueryFailure timeout_failure(const QueryErrorDetail& last_rejection) {
     if (!std::holds_alternative<std::monostate>(last_rejection)) {
         return {QueryErrorCode::InvalidResponse, last_rejection};
@@ -34,6 +36,7 @@ QueryFailure timeout_failure(const QueryErrorDetail& last_rejection) {
     return {QueryErrorCode::Timeout};
 }
 
+/// 将网络错误映射为查询失败，同时保留底层原因和最近一次响应拒绝详情。
 QueryFailure network_failure(net::NetworkError error,
                              const QueryErrorDetail& last_rejection = {}) {
     if (error.code == net::NetworkErrorCode::TimedOut) {
@@ -42,15 +45,16 @@ QueryFailure network_failure(net::NetworkError error,
     if (error.code == net::NetworkErrorCode::InvalidMessageLength) {
         return {QueryErrorCode::InvalidResponse, error};
     }
-    // EOF, connect failures and other I/O errors keep their original cause,
-    // regardless of any malformed or mismatched messages received earlier.
+    // 连接关闭、连接失败和其他收发错误保留原始原因，不被此前的畸形或不匹配响应覆盖。
     return {QueryErrorCode::Network, error};
 }
 
+/// 在共享截止时间内完成一次传输，并记录响应或失败和忽略消息数量。
 QueryAttempt run_attempt(const QueryContext& context, QueryTransport transport) {
     const auto started_at = Clock::now();
     std::size_t ignored = 0;
     QueryErrorDetail last_rejection;
+    /// 为当前尝试生成包含耗时与已忽略消息数的失败记录。
     const auto failed = [&](QueryFailure failure) {
         return QueryAttempt{transport, elapsed_since(started_at),
                             std::unexpected(std::move(failure)), ignored};
@@ -90,6 +94,7 @@ QueryAttempt run_attempt(const QueryContext& context, QueryTransport transport) 
             if (!received) {
                 return failed(network_failure(received.error(), last_rejection));
             }
+            // 先校验来源，避免把其他端点的数据计入目标服务器的无效响应。
             if (received->sender != context.server) {
                 ++ignored;
                 continue;
@@ -103,6 +108,7 @@ QueryAttempt run_attempt(const QueryContext& context, QueryTransport transport) 
             bytes = std::move(*received);
         }
 
+        // 只有完整解析且事务匹配的消息才可成功；忽略坏消息仍继续使用同一截止时间。
         auto response = dns::parse_message(bytes);
         if (!response) {
             last_rejection = response.error();
@@ -128,8 +134,9 @@ QueryAttempt run_attempt(const QueryContext& context, QueryTransport transport) 
     }
 }
 
-} // namespace
+} // 匿名命名空间
 
+/// 校验请求并编排普通 DNS 查询，自动回退时沿用原报文和剩余预算。
 std::expected<QueryResult, QueryError>
 query_server(const dns::DnsQuestion& question, const net::Endpoint& server,
              TransportMode mode, std::chrono::milliseconds budget,
@@ -169,8 +176,7 @@ query_server(const dns::DnsQuestion& question, const net::Endpoint& server,
             return std::unexpected(QueryError{
                 QueryErrorCode::IdGeneration, {}, elapsed_since(started_at)});
         }
-        // The validated encoded query is shared by UDP and TCP; only the two
-        // transaction ID bytes change when the caller does not provide an ID.
+        // UDP 和 TCP 共用已经校验的查询报文；自动生成 ID 时只替换两个事务 ID 字节。
         (*packet)[0] = static_cast<std::byte>(id >> 8);
         (*packet)[1] = static_cast<std::byte>(id & 0xFFU);
     }
@@ -184,6 +190,7 @@ query_server(const dns::DnsQuestion& question, const net::Endpoint& server,
     attempts.reserve(mode == TransportMode::Auto ? 2U : 1U);
     attempts.push_back(run_attempt(context, mode == TransportMode::Tcp
         ? QueryTransport::Tcp : QueryTransport::Udp));
+    // 仅匹配的截断 UDP 响应触发一次 TCP 回退，UDP 超时或 TCP 再次截断都不继续回退。
     if (mode == TransportMode::Auto && attempts.front().outcome &&
         attempts.front().outcome->header.truncated()) {
         attempts.push_back(run_attempt(context, QueryTransport::Tcp));
@@ -205,4 +212,4 @@ query_server(const dns::DnsQuestion& question, const net::Endpoint& server,
         elapsed_since(started_at), ignored, std::move(attempts)};
 }
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

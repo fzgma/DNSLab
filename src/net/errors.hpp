@@ -27,9 +27,9 @@ enum class NetworkErrorCode {
 
 struct NetworkError {
     NetworkOperation operation;
-    // Winsock error code on Windows, errno value on Linux.
+    // Windows 保存 Winsock 错误码，Linux 保存 errno 值。
     int system_code;
     NetworkErrorCode code{NetworkErrorCode::System};
 };
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

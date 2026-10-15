@@ -78,3 +78,6 @@ CMakeUserPresets.json
 # Generated reports
 reports/
 coverage/
+
+
+/.agents/

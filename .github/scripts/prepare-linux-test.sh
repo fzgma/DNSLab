@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only runtime test tools: this image never builds DNSLab or its dependencies.
+# 仅安装运行测试所需的工具，镜像不编译 DNSLab 或其依赖。
 source /etc/os-release
 case "$ID" in
     ubuntu|debian)
@@ -15,7 +15,7 @@ case "$ID" in
         pacman -Scc --noconfirm
         ;;
     *)
-        echo "Unsupported runtime distribution: $ID" >&2
+        echo "不支持此运行环境发行版：$ID" >&2
         exit 1
         ;;
 esac

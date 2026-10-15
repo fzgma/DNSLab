@@ -4,6 +4,7 @@
 
 namespace dnslab::app {
 
+/// 按固定优先级验证响应标志、事务 ID、操作码和唯一问题。
 std::expected<void, ResponseMismatch>
 validate_response(const dns::DnsMessage& response, const dns::DnsQuestion& question,
                   std::uint16_t transaction_id) noexcept {
@@ -20,6 +21,7 @@ validate_response(const dns::DnsMessage& response, const dns::DnsQuestion& quest
         return std::unexpected(ResponseMismatch::QuestionCount);
     }
 
+    // 名称只折叠 ASCII 大小写；标签边界及其他原始字节必须完全一致。
     const auto& received_question = response.questions.front();
     if (!dns::names_equal_case_insensitive(received_question.name, question.name)) {
         return std::unexpected(ResponseMismatch::QuestionName);
@@ -33,4 +35,4 @@ validate_response(const dns::DnsMessage& response, const dns::DnsQuestion& quest
     return {};
 }
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

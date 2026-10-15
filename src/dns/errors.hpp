@@ -16,8 +16,8 @@ enum class NameInputErrorCode {
 
 struct NameInputError {
     NameInputErrorCode code;
-    // Byte offset in the input; length errors identify the offending label start.
-    // NumericOnlyName identifies the entire input and uses offset zero.
+    // 偏移按原始输入字节计数；长度错误定位违规标签起点。
+    // NumericOnlyName 针对整个输入，偏移固定为零。
     std::size_t offset;
 };
 
@@ -31,7 +31,7 @@ enum class DnsEncodeErrorCode {
 
 struct DnsEncodeError {
     DnsEncodeErrorCode code;
-    // Unsupported query type/class errors use zero; no label is implicated.
+    // 不支持的查询类型或类别不涉及具体标签，索引固定为零。
     std::size_t label_index;
 };
 
@@ -44,12 +44,12 @@ enum class DnsParseErrorCode {
     CompressionPointerNotBackward,
     CompressionLoop,
     ExpandedNameTooLong,
-    PacketTooShort, // offset is packet.size().
-    PacketTooLarge, // offset is the maximum packet size, 65535.
-    SectionCountMismatch, // offset is the missing entry's cursor at packet end.
-    InvalidRdataLength, // offset is the RDLENGTH field's first byte.
-    RdataLengthMismatch, // offset is the RDATA field's first byte.
-    TrailingData, // offset is the first unconsumed byte.
+    PacketTooShort, // 偏移为报文实际长度。
+    PacketTooLarge, // 偏移为最大报文长度 65535。
+    SectionCountMismatch, // 偏移为缺失条目所在的报文末尾。
+    InvalidRdataLength, // 偏移为 RDLENGTH 字段首字节。
+    RdataLengthMismatch, // 偏移为 RDATA 字段首字节。
+    TrailingData, // 偏移为首个未消费的字节。
 };
 
 struct DnsParseError {
@@ -57,4 +57,4 @@ struct DnsParseError {
     std::size_t offset;
 };
 
-} // namespace dnslab::dns
+} // 命名空间 dnslab::dns

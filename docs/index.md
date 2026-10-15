@@ -12,6 +12,7 @@
 | [wire-codec.md](wire-codec.md) | 名称和 DNS 报文的编码、解析与错误约定 |
 | [network.md](network.md) | 端点模型、套接字所有权、网络错误、查询预算与 UDP/TCP/DoH/DoT 收发 |
 | [build.md](build.md) | 准备依赖、本地构建、测试分类与跨平台持续集成 |
+| [style.md](style.md) | 中文提示、函数说明与 C++23 代码约定 |
 | [todo.md](todo.md) | 已完成工作、下一步与验收记录 |
 
 根目录 [README.md](../README.md) 面向使用者，介绍当前功能与用法；[AGENTS.md](../AGENTS.md) 记录协作、文档和提交约定。

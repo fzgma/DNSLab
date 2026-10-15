@@ -14,7 +14,7 @@ env:
 
 jobs:
   windows:
-    name: Windows latest / MSVC x64
+    name: Windows 最新版 / MSVC x64
     runs-on: windows-latest
     timeout-minutes: 60
     defaults:
@@ -39,7 +39,7 @@ jobs:
           "VCPKG_ROOT=$vcpkgDirectory" >> $env:GITHUB_ENV
       - name: 使用默认 Visual Studio 工具链配置静态 Release
         run: |
-          # 不固定生成器或工具集版本，使用 runner 当前默认的 Visual Studio。
+          # 使用运行器当前默认的 Visual Studio，不固定生成器或工具集版本。
           cmake -S . -B build -A x64 `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static `
@@ -185,7 +185,7 @@ jobs:
             2>&1 | tee "build/ci-logs/$DNSLAB_TEST_DISTRIBUTION/image.log"
       - name: 运行冒烟、单元和本地网络集成测试
         run: |
-          # host 网络保留真实 IPv4/IPv6 回环；测试脚本只注册并运行既有二进制。
+          # 使用主机网络保留真实 IPv4/IPv6 回环；脚本只注册并运行既有程序。
           docker run --rm --network host \
             --volume "$PWD:/workspace" --workdir /workspace \
             dnslab-linux-test bash .github/scripts/test-linux.sh "$DNSLAB_TEST_DISTRIBUTION" \

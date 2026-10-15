@@ -2,7 +2,7 @@
 ARG BASE_IMAGE=quay.io/pypa/manylinux_2_28_x86_64
 FROM ${BASE_IMAGE}
 
-# CI builds this image with --pull --no-cache. No dependency cache is exported.
+# 持续集成每次拉取并重新构建镜像，不导出依赖缓存。
 RUN dnf install -y gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ \
         gcc-toolset-15-libstdc++-devel gcc-toolset-15-binutils \
         git curl zip unzip tar gzip make perl-core pkgconf-pkg-config ca-certificates \

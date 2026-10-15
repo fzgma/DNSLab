@@ -13,12 +13,12 @@ export CC="$dnslab_gcc_prefix/bin/gcc"
 export CXX="$dnslab_gcc_prefix/bin/g++"
 export AR="$dnslab_gcc_prefix/bin/ar"
 export RANLIB="$dnslab_gcc_prefix/bin/ranlib"
-# Do not inherit architecture flags or a shared C++ runtime from the image.
+# 清除镜像继承的架构参数及共享 C++ 运行库选项。
 unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 for dnslab_compiler in "$CC" "$CXX"; do
     dnslab_version=$("$dnslab_compiler" -dumpfullversion -dumpversion)
     if [[ "${dnslab_version%%.*}" != 15 ]]; then
-        echo "Expected GCC 15: $dnslab_compiler reports $dnslab_version" >&2
+        echo "需要 GCC 15：$dnslab_compiler 当前版本为 $dnslab_version" >&2
         exit 1
     fi
     "$dnslab_compiler" --version
@@ -27,7 +27,7 @@ for dnslab_library in libstdc++.a libgcc.a; do
     dnslab_library_path=$("$CXX" -print-file-name="$dnslab_library")
     case "$dnslab_library_path" in
         "$dnslab_gcc_prefix/"*) test -f "$dnslab_library_path" ;;
-        *) echo "Missing GCC 15 static runtime: $dnslab_library_path" >&2; exit 1 ;;
+        *) echo "缺少 GCC 15 静态运行库：$dnslab_library_path" >&2; exit 1 ;;
     esac
 done
 
@@ -36,7 +36,7 @@ import json, re
 with open("vcpkg.json", encoding="utf-8") as manifest:
     baseline = json.load(manifest)["builtin-baseline"]
 if not re.fullmatch(r"[0-9a-f]{40}", baseline):
-    raise SystemExit("vcpkg.json must contain a full builtin-baseline commit")
+    raise SystemExit("vcpkg.json 的 builtin-baseline 必须填写完整提交编号")
 print(baseline)
 ')
 export VCPKG_ROOT="$dnslab_root/build-deps/vcpkg"
@@ -61,13 +61,13 @@ cmake --fresh -S "$dnslab_root" -B "$dnslab_build" -G Ninja \
     "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$dnslab_root/.github/scripts/toolchains/gcc15.cmake"
 cmake --build "$dnslab_build" --parallel 2
 
-# Keep the runtime bundle small and independent of vcpkg and the build tree.
+# 只打包运行测试所需的产物，避免携带依赖安装目录和完整构建目录。
 dnslab_programs=(dnslab dnslab_tests dnslab_integration_tests)
 for dnslab_program in "${dnslab_programs[@]}"; do
     test -x "$dnslab_build/$dnslab_program"
     dnslab_dynamic=$(readelf -d "$dnslab_build/$dnslab_program")
     if [[ "$dnslab_dynamic" == *libstdc++.so* || "$dnslab_dynamic" == *libgcc_s.so* ]]; then
-        echo "$dnslab_program unexpectedly depends on a shared C++ runtime" >&2
+        echo "$dnslab_program 意外依赖了共享 C++ 运行库" >&2
         exit 1
     fi
     ldd "$dnslab_build/$dnslab_program"

@@ -10,9 +10,11 @@ using namespace dnslab;
 using namespace dnslab::test;
 using namespace std::chrono_literals;
 
+/// 执行指定地址族和回答类型的本地 TCP 查询并核对完整结果。
 void check_tcp_answer(net::IpFamily family, AnswerKind kind) {
     TcpServer server{family};
     WorkerState state;
+    /// 接受查询并返回当前类型的回答。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
@@ -38,33 +40,35 @@ void check_tcp_answer(net::IpFamily family, AnswerKind kind) {
     check_answer(*result, kind);
 }
 
+/// 在目标字节序列后追加两字节长度前缀及完整 DNS 消息。
 void append_frame(dns::Packet& destination, const dns::Packet& packet) {
     destination.push_back(static_cast<std::byte>(packet.size() >> 8));
     destination.push_back(static_cast<std::byte>(packet.size() & 0xffU));
     destination.insert(destination.end(), packet.begin(), packet.end());
 }
 
-} // namespace
+} // 匿名命名空间
 
-TEST_CASE("Local IPv4 TCP queries preserve A AAAA and CNAME answers", "[query][tcp]") {
+TEST_CASE("本地 IPv4 TCP 查询保留 A、AAAA 和 CNAME 回答", "[query][tcp]") {
     for (const auto kind : {AnswerKind::A, AnswerKind::Aaaa, AnswerKind::Cname}) {
         CAPTURE(static_cast<int>(kind));
         check_tcp_answer(net::IpFamily::V4, kind);
     }
 }
 
-TEST_CASE("Local IPv6 TCP queries preserve A AAAA and CNAME answers", "[query][tcp][ipv6]") {
+TEST_CASE("本地 IPv6 TCP 查询保留 A、AAAA 和 CNAME 回答", "[query][tcp][ipv6]") {
     for (const auto kind : {AnswerKind::A, AnswerKind::Aaaa, AnswerKind::Cname}) {
         CAPTURE(static_cast<int>(kind));
         check_tcp_answer(net::IpFamily::V6, kind);
     }
 }
 
-TEST_CASE("TCP queries retain empty answers and DNS error rcodes", "[query][tcp]") {
+TEST_CASE("TCP 查询保留空回答和 DNS 错误响应码", "[query][tcp]") {
     for (const auto rcode : {0U, 2U, 3U}) {
         CAPTURE(rcode);
         TcpServer server;
         WorkerState state;
+        /// 返回指定 DNS 响应码及空回答。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             auto stream = server.accept(deadline);
             state.request = stream.receive_frame(deadline);
@@ -83,9 +87,10 @@ TEST_CASE("TCP queries retain empty answers and DNS error rcodes", "[query][tcp]
     }
 }
 
-TEST_CASE("TCP query assembles fragmented prefix and response body", "[query][tcp]") {
+TEST_CASE("TCP 查询组装分段前缀和响应正文", "[query][tcp]") {
     TcpServer server;
     WorkerState state;
+    /// 分段发送长度前缀和正文以验证查询端组装。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token stop) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
@@ -109,14 +114,15 @@ TEST_CASE("TCP query assembles fragmented prefix and response body", "[query][tc
     CHECK(result->ignored_messages == 0);
 }
 
-TEST_CASE("TCP query skips malformed and mismatched frames before a valid frame", "[query][tcp]") {
+TEST_CASE("TCP 查询在有效帧前跳过畸形和不匹配帧", "[query][tcp]") {
     TcpServer server;
     WorkerState state;
+    /// 连续发送畸形、不匹配和有效帧以验证恢复。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
         auto malformed = empty_response(state.request);
-        malformed.resize(12); // QDCOUNT still requires an absent question.
+        malformed.resize(12); // QDCOUNT 仍声明存在已被截去的问题。
         auto mismatch = empty_response(state.request);
         mismatch[1] ^= std::byte{1};
         dns::Packet frames;
@@ -136,9 +142,10 @@ TEST_CASE("TCP query skips malformed and mismatched frames before a valid frame"
     CHECK(result->attempts[0].ignored_messages == 2);
 }
 
-TEST_CASE("TCP query accepts a complete 65535 byte DNS message", "[query][tcp]") {
+TEST_CASE("TCP 查询接受完整的 65535 字节 DNS 消息", "[query][tcp]") {
     TcpServer server;
     WorkerState state;
+    /// 返回协议允许的最大完整 DNS 消息。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
@@ -163,11 +170,12 @@ TEST_CASE("TCP query accepts a complete 65535 byte DNS message", "[query][tcp]")
     CHECK(std::get<dns::OpaqueData>(rdata).bytes == dns::Packet(65494, std::byte{0xa5}));
 }
 
-TEST_CASE("TCP query rejects zero and undersized frame lengths", "[query][tcp]") {
+TEST_CASE("TCP 查询拒绝零长度和过短的帧", "[query][tcp]") {
     for (const auto length : {0U, 1U, 11U}) {
         CAPTURE(length);
         TcpServer server;
         WorkerState state;
+        /// 发送当前样本的过短长度前缀。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             auto stream = server.accept(deadline);
             state.request = stream.receive_frame(deadline);
@@ -188,7 +196,7 @@ TEST_CASE("TCP query rejects zero and undersized frame lengths", "[query][tcp]")
     }
 }
 
-TEST_CASE("TCP EOF before a response or within a frame remains a network error", "[query][tcp]") {
+TEST_CASE("TCP 在响应前或帧中提前关闭仍报告网络错误", "[query][tcp]") {
     const std::array<dns::Packet, 3> partial_frames{
         dns::Packet{}, dns::Packet{std::byte{0}},
         dns::Packet{std::byte{0}, std::byte{12}, std::byte{0x12}, std::byte{0x34}}};
@@ -196,6 +204,7 @@ TEST_CASE("TCP EOF before a response or within a frame remains a network error",
         CAPTURE(partial.size());
         TcpServer server;
         WorkerState state;
+        /// 按场景发送部分数据后结束连接。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             auto stream = server.accept(deadline);
             state.request = stream.receive_frame(deadline);
@@ -214,9 +223,10 @@ TEST_CASE("TCP EOF before a response or within a frame remains a network error",
     }
 }
 
-TEST_CASE("TCP EOF after an invalid DNS frame retains the transport failure", "[query][tcp]") {
+TEST_CASE("TCP 在无效 DNS 帧后提前关闭保留传输错误", "[query][tcp]") {
     TcpServer server;
     WorkerState state;
+    /// 发送无效 DNS 帧后结束连接以验证错误保留。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
@@ -237,15 +247,15 @@ TEST_CASE("TCP EOF after an invalid DNS frame retains the transport failure", "[
           net::NetworkErrorCode::ConnectionClosed);
 }
 
-TEST_CASE("TCP connection refusal is a network error with one attempt", "[query][tcp]") {
+TEST_CASE("TCP 连接被拒绝时记录一次网络失败尝试", "[query][tcp]") {
     auto reserved = net::Socket::open(net::IpFamily::V4, net::SocketTransport::Tcp);
     REQUIRE(reserved.has_value());
     const auto loopback = tcp_fixture_detail::loopback(net::IpFamily::V4, 0);
     REQUIRE(net::bind_socket(*reserved, loopback).has_value());
     const auto endpoint = net::local_endpoint(*reserved);
     REQUIRE(endpoint.has_value());
-    // Hold the port without listening throughout the connection attempt. Allow
-    // Windows localhost refusal retries to finish; deadline tests use shorter budgets.
+    // 连接尝试期间保留端口但不监听，并留足时间让
+    // Windows 完成本地拒绝连接重试；截止时间用例使用更短预算。
     const auto result = app::query_server(example_question(), *endpoint,
                                          app::TransportMode::Tcp, 5000ms, query_id);
     REQUIRE_FALSE(result.has_value());
@@ -260,11 +270,12 @@ TEST_CASE("TCP connection refusal is a network error with one attempt", "[query]
     CHECK(result.error().attempts[0].transport == app::QueryTransport::Tcp);
 }
 
-TEST_CASE("TCP timeout distinguishes no response from rejected responses", "[query][tcp]") {
+TEST_CASE("TCP 超时区分未收到响应与响应被拒绝", "[query][tcp]") {
     for (const bool send_invalid : {false, true}) {
         CAPTURE(send_invalid);
         TcpServer server;
         WorkerState state;
+        /// 按场景发送无效响应后保持连接直到查询预算耗尽。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token stop) {
             auto stream = server.accept(deadline);
             state.request = stream.receive_frame(deadline);
@@ -292,10 +303,11 @@ TEST_CASE("TCP timeout distinguishes no response from rejected responses", "[que
     }
 }
 
-TEST_CASE("TCP truncation is returned without another query attempt", "[query][tcp]") {
+TEST_CASE("TCP 返回截断响应且不增加查询尝试", "[query][tcp]") {
     TcpServer server;
     UdpServer udp{server.endpoint()};
     WorkerState state;
+    /// 返回带 TC 的有效 TCP 响应以验证不再回退。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         auto stream = server.accept(deadline);
         state.request = stream.receive_frame(deadline);
@@ -314,8 +326,9 @@ TEST_CASE("TCP truncation is returned without another query attempt", "[query][t
     CHECK(extra.error().code == net::NetworkErrorCode::TimedOut);
 }
 
-TEST_CASE("Invalid query inputs fail before opening a TCP connection", "[query][tcp]") {
+TEST_CASE("无效查询输入在打开 TCP 连接前失败", "[query][tcp]") {
     TcpServer server;
+    /// 核对参数错误类别及空尝试列表，证明查询尚未进入网络阶段。
     const auto check_error = [&](const auto& result, app::QueryErrorCode code) {
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == code);

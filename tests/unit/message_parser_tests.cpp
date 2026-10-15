@@ -18,8 +18,9 @@ using namespace dnslab::dns;
 
 constexpr std::array root_name{std::byte{0}};
 
+/// 构造包含一个 example.com A 问题与应答的固定基准响应。
 Packet golden_response() {
-    // ID=0x1234, standard response, one example.com A question and answer.
+    // 事务 ID 为 0x1234，标准响应中包含一个 example.com A 问题和应答。
     return {
         std::byte{0x12}, std::byte{0x34}, std::byte{0x81}, std::byte{0x80},
         std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x01},
@@ -36,6 +37,7 @@ Packet golden_response() {
     };
 }
 
+/// 按指定计数、标志和事务 ID 构造 DNS 报文头。
 Packet header(std::array<std::uint16_t, 4> counts,
               std::uint16_t flags = 0x8180, std::uint16_t id = 0x1234) {
     Packet packet;
@@ -47,11 +49,13 @@ Packet header(std::array<std::uint16_t, 4> counts,
     return packet;
 }
 
+/// 按大端顺序覆盖报文中的一个 16 位字段。
 void set_word(Packet& packet, std::size_t offset, std::uint16_t value) {
     packet[offset] = static_cast<std::byte>((value >> 8) & 0xffU);
     packet[offset + 1] = static_cast<std::byte>(value & 0xffU);
 }
 
+/// 追加给定名称、类型和类别的问题条目。
 void append_question(Packet& packet, std::span<const std::byte> name,
                      std::uint16_t type, std::uint16_t qclass) {
     packet.insert(packet.end(), name.begin(), name.end());
@@ -59,6 +63,7 @@ void append_question(Packet& packet, std::span<const std::byte> name,
     append_u16_be(packet, qclass);
 }
 
+/// 使用给定字段和原始 RDATA 追加一条资源记录。
 void append_record(Packet& packet, std::uint16_t type, std::uint16_t rr_class,
                    std::span<const std::byte> rdata, std::uint32_t ttl = 0,
                    std::span<const std::byte> owner = root_name) {
@@ -71,6 +76,7 @@ void append_record(Packet& packet, std::uint16_t type, std::uint16_t rr_class,
     packet.insert(packet.end(), rdata.begin(), rdata.end());
 }
 
+/// 断言报文解析失败，并检查错误类别及报文偏移。
 void check_error(std::span<const std::byte> packet, DnsParseErrorCode code,
                  std::size_t offset) {
     const auto result = parse_message(packet);
@@ -79,7 +85,7 @@ void check_error(std::span<const std::byte> packet, DnsParseErrorCode code,
     CHECK(result.error().offset == offset);
 }
 
-TEST_CASE("Message parsing decodes a complete golden A response",
+TEST_CASE("报文解析解码完整的 A 响应基准报文",
           "[message_parser][golden]") {
     const auto packet = golden_response();
     const auto original = packet;
@@ -106,7 +112,7 @@ TEST_CASE("Message parsing decodes a complete golden A response",
     CHECK(result->additional.empty());
 }
 
-TEST_CASE("A twelve-byte message preserves flags without response matching",
+TEST_CASE("十二字节报文保留标志且不执行响应匹配",
           "[message_parser][header]") {
     for (const std::uint16_t flags : {std::uint16_t{0}, std::uint16_t{0xffff},
                                       std::uint16_t{0x784f}}) {
@@ -122,7 +128,7 @@ TEST_CASE("A twelve-byte message preserves flags without response matching",
     }
 }
 
-TEST_CASE("Message parsing preserves four sections and unrestricted questions",
+TEST_CASE("报文解析保留四个区段且不限制问题数量",
           "[message_parser][sections]") {
     auto packet = header({2, 1, 1, 1}, 0x7fff);
     append_question(packet, root_name, 0xffff, 0xfffe);
@@ -165,10 +171,10 @@ TEST_CASE("Message parsing preserves four sections and unrestricted questions",
     CHECK(result->additional[0].ttl == 0x80000000U);
 }
 
-TEST_CASE("CNAME decoding uses the complete packet and compressed consumption",
+TEST_CASE("CNAME 解码使用完整报文并正确累计压缩消费长度",
           "[message_parser][cname]") {
     auto packet = golden_response();
-    packet.resize(29); // Retain only the header and example.com question.
+    packet.resize(29); // 只保留报文头和 example.com 问题。
     set_word(packet, 6, 2);
     const std::array owner{std::byte{0xc0}, std::byte{12}};
     const std::array alias{
@@ -182,7 +188,7 @@ TEST_CASE("CNAME decoding uses the complete packet and compressed consumption",
     const auto result = parse_message(packet);
     REQUIRE(result.has_value());
     REQUIRE(result->answers.size() == 2);
-    CHECK(result->answers[0].rr_class == 3); // CNAME is name data for any class.
+    CHECK(result->answers[0].rr_class == 3); // 任意类别的 CNAME 都按名称数据解析。
     REQUIRE(std::holds_alternative<NameData>(result->answers[0].rdata));
     const std::vector<std::string> expected{"www", "example", "com"};
     CHECK(std::get<NameData>(result->answers[0].rdata).name.labels == expected);
@@ -200,7 +206,7 @@ TEST_CASE("CNAME decoding uses the complete packet and compressed consumption",
     CHECK(std::get<NameData>(raw_result->answers[0].rdata).name.labels == raw_labels);
 }
 
-TEST_CASE("Unknown types and non-IN address records preserve opaque data",
+TEST_CASE("未知类型和非 IN 地址记录保留原始数据",
           "[message_parser][opaque]") {
     struct Sample {
         std::uint16_t type;
@@ -225,7 +231,7 @@ TEST_CASE("Unknown types and non-IN address records preserve opaque data",
     }
 }
 
-TEST_CASE("Message parsing rejects every truncation of the golden response",
+TEST_CASE("报文解析拒绝基准响应的所有截断形式",
           "[message_parser][bounds]") {
     const auto packet = golden_response();
     REQUIRE(packet.size() == 45);
@@ -263,7 +269,7 @@ TEST_CASE("Message parsing rejects every truncation of the golden response",
     }
 }
 
-TEST_CASE("Section counts fail at the first missing entry in every section",
+TEST_CASE("各区段计数在首个缺失条目处报错",
           "[message_parser][counts]") {
     for (std::size_t section = 0; section < 4; ++section) {
         CAPTURE(section);
@@ -282,7 +288,7 @@ TEST_CASE("Section counts fail at the first missing entry in every section",
     }
 }
 
-TEST_CASE("IN address records reject incorrect complete RDATA lengths",
+TEST_CASE("IN 地址记录拒绝完整但长度错误的 RDATA",
           "[message_parser][rdata]") {
     struct Sample {
         std::uint16_t type;
@@ -297,7 +303,7 @@ TEST_CASE("IN address records reject incorrect complete RDATA lengths",
     }
 }
 
-TEST_CASE("RDATA packet bounds are checked before type-specific lengths",
+TEST_CASE("RDATA 先检查报文边界再检查类型长度",
           "[message_parser][rdata][bounds]") {
     for (const auto type : {std::uint16_t{1}, std::uint16_t{28},
                             std::uint16_t{5}, std::uint16_t{65000}}) {
@@ -310,23 +316,23 @@ TEST_CASE("RDATA packet bounds are checked before type-specific lengths",
     }
 }
 
-TEST_CASE("CNAME RDLENGTH must match consumption without using the next record",
+TEST_CASE("CNAME 的 RDLENGTH 必须匹配消费长度且不能借用下一记录",
           "[message_parser][cname][bounds]") {
-    SECTION("A short RDATA cannot borrow the next record's first byte") {
+    SECTION("过短的 RDATA 不能借用下一记录的首字节") {
         auto packet = header({0, 2, 0, 0}, 0x8180, 0);
         const std::array incomplete_pointer{std::byte{0xc0}};
         append_record(packet, 5, 1, incomplete_pointer);
         append_record(packet, 65000, 1, {});
-        // The following root owner would complete a pointer to header byte zero.
+        // 后续记录的根名本可补齐指向报文首字节的压缩指针。
         check_error(packet, DnsParseErrorCode::RdataLengthMismatch, 23);
     }
-    SECTION("A complete pointer cannot leave bytes within its RDATA") {
+    SECTION("完整压缩指针不能在 RDATA 内留下多余字节") {
         auto packet = header({0, 1, 0, 0});
         const std::array padded_pointer{std::byte{0xc0}, std::byte{12}, std::byte{0xff}};
         append_record(packet, 5, 1, padded_pointer);
         check_error(packet, DnsParseErrorCode::RdataLengthMismatch, 23);
     }
-    SECTION("An ordinary root cannot leave RDATA bytes either") {
+    SECTION("普通根名也不能在 RDATA 内留下多余字节") {
         auto packet = header({0, 1, 0, 0});
         const std::array padded_root{std::byte{0}, std::byte{0}};
         append_record(packet, 5, 1, padded_root);
@@ -334,7 +340,7 @@ TEST_CASE("CNAME RDLENGTH must match consumption without using the next record",
     }
 }
 
-TEST_CASE("Message parsing propagates name errors with packet-relative offsets",
+TEST_CASE("报文解析原样传递名称错误及其相对报文偏移",
           "[message_parser][cname][errors]") {
     struct Sample {
         Packet bytes;
@@ -365,7 +371,7 @@ TEST_CASE("Message parsing propagates name errors with packet-relative offsets",
     check_error(packet, DnsParseErrorCode::ReservedLabelEncoding, 2);
 }
 
-TEST_CASE("Message parsing accepts 65535 bytes and rejects a larger packet first",
+TEST_CASE("报文解析接受 65535 字节并优先拒绝更大的报文",
           "[message_parser][bounds]") {
     auto packet = header({0, 1, 0, 0});
     const Packet opaque(65535 - 23, std::byte{0xff});
@@ -381,7 +387,7 @@ TEST_CASE("Message parsing accepts 65535 bytes and rejects a larger packet first
     check_error(packet, DnsParseErrorCode::PacketTooLarge, 65535);
 }
 
-TEST_CASE("Message parsing rejects trailing bytes after declared sections",
+TEST_CASE("报文解析拒绝声明区段之后的尾随字节",
           "[message_parser][bounds]") {
     auto empty = header({});
     empty.push_back(std::byte{0});
@@ -393,4 +399,4 @@ TEST_CASE("Message parsing rejects trailing bytes after declared sections",
     check_error(packet, DnsParseErrorCode::TrailingData, 45);
 }
 
-} // namespace
+} // 命名空间

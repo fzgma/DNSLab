@@ -43,8 +43,7 @@ struct QueryFailure {
 struct QueryAttempt {
     QueryTransport transport;
     std::chrono::microseconds elapsed;
-    // A matching TC response remains a successful UDP attempt even when the
-    // subsequent TCP attempt fails; it does not make the overall query succeed.
+    // 即使后续 TCP 失败，匹配的截断 UDP 响应仍保留为成功尝试；整体查询以最后尝试为准。
     std::expected<dns::DnsMessage, QueryFailure> outcome;
     std::size_t ignored_messages{};
 };
@@ -68,15 +67,14 @@ struct QueryError {
     std::vector<QueryAttempt> attempts{};
 };
 
-// One ID, encoded query and absolute deadline cover all preparation and attempts.
-// Auto falls back only after a complete, matching UDP response with TC set.
-// Malformed DNS messages in complete TCP frames can be ignored. Invalid framing
-// terminates with InvalidResponse and the original NetworkError; EOF and other
-// transport failures remain Network errors even after an earlier bad response.
+/// 在同一事务 ID、查询报文和截止时间下执行单服务器查询及必要的截断回退。
+// 自动模式仅在完整且匹配的 UDP 响应带 TC 时回退。
+// 完整 TCP 帧内的无效 DNS 响应可被忽略；帧长度错误则保留网络详情并终止为无效响应。
+// 连接关闭和其他收发失败始终保留网络原因，不被此前收到的坏响应掩盖。
 [[nodiscard]] std::expected<QueryResult, QueryError>
 query_server(const dns::DnsQuestion& question, const net::Endpoint& server,
              TransportMode mode = TransportMode::Auto,
              std::chrono::milliseconds budget = std::chrono::milliseconds{1500},
              std::optional<std::uint16_t> transaction_id = std::nullopt);
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

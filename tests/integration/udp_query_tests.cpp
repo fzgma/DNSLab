@@ -37,6 +37,7 @@ struct ServerState {
     std::size_t sent{};
 };
 
+/// 在指定地址族的回环临时端口创建 UDP 测试服务器。
 BoundServer bind_loopback(net::IpFamily family = net::IpFamily::V4) {
     net::Endpoint endpoint;
     endpoint.port = 0;
@@ -59,8 +60,10 @@ BoundServer bind_loopback(net::IpFamily family = net::IpFamily::V4) {
     return BoundServer{std::move(*socket), *local};
 }
 
+/// 启动一次有界 UDP 服务并把异常和原始请求交回主线程检查。
 template <typename Handler>
 std::jthread serve_once(const BoundServer& server, ServerState& state, Handler handler) {
+    /// 接收一次请求后执行场景处理器，并捕获工作线程中的所有异常。
     return std::jthread{[&server, &state, handler = std::move(handler)](
                             std::stop_token stop) {
         try {
@@ -78,6 +81,7 @@ std::jthread serve_once(const BoundServer& server, ServerState& state, Handler h
     }};
 }
 
+/// 发送 UDP 测试响应并记录底层错误和成功发送数量。
 bool send_reply(const net::Socket& socket, const net::Endpoint& destination,
                 const dns::Packet& packet, const net::Deadline& deadline,
                 ServerState& state) {
@@ -90,30 +94,34 @@ bool send_reply(const net::Socket& socket, const net::Endpoint& destination,
     return true;
 }
 
+/// 在主线程验证 UDP 测试服务器收到请求且未发生异常。
 void check_server(const ServerState& state) {
     REQUIRE_FALSE(static_cast<bool>(state.exception));
     if (state.network_error) {
-        INFO("server operation " << static_cast<int>(state.network_error->operation)
-             << ", system error " << state.network_error->system_code
-             << ", code " << static_cast<int>(state.network_error->code));
-        FAIL("local UDP server failed");
+        INFO("服务器操作阶段 " << static_cast<int>(state.network_error->operation)
+             << "，系统错误码 " << state.network_error->system_code
+             << "，错误类别 " << static_cast<int>(state.network_error->code));
+        FAIL("本地 UDP 服务器失败");
     }
     REQUIRE_FALSE(state.query.empty());
 }
 
+/// 构造指定记录类型的固定域名查询。
 dns::DnsQuestion example_question(std::uint16_t type = 1) {
     return dns::DnsQuestion{dns::DnsName{{"example", "com"}}, type, 1};
 }
 
+/// 在原查询上设置响应标志，构造没有回答的有效 DNS 响应。
 dns::Packet empty_response(const dns::Packet& query) {
     auto response = query;
-    response.at(2) = std::byte{0x81}; // QR and RD.
-    response.at(3) = std::byte{0x80}; // RA, NOERROR.
+    response.at(2) = std::byte{0x81}; // 设置 QR 和 RD 标志。
+    response.at(3) = std::byte{0x80}; // 设置 RA 标志及 NOERROR 响应码。
     return response;
 }
 
 enum class AnswerKind { A, Aaaa, Cname };
 
+/// 用固定报文字节构造包含 A、AAAA 或 CNAME 的响应。
 dns::Packet response_with_answer(const dns::Packet& query, AnswerKind kind) {
     auto response = empty_response(query);
     response[7] = std::byte{1};
@@ -150,6 +158,7 @@ dns::Packet response_with_answer(const dns::Packet& query, AnswerKind kind) {
 
 enum class Rejection { Id, Qr, Opcode, Count, Name, Type, Class, Malformed };
 
+/// 按指定拒绝原因改写响应，以独立验证响应匹配逻辑。
 dns::Packet rejected_response(const dns::Packet& query, Rejection rejection) {
     auto response = empty_response(query);
     switch (rejection) {
@@ -181,11 +190,13 @@ dns::Packet rejected_response(const dns::Packet& query, Rejection rejection) {
     return response;
 }
 
+/// 完成一次本地 UDP 查询并核对问题、回答、耗时及忽略数量。
 void check_query_answer(net::IpFamily family, std::uint16_t type, AnswerKind answer_kind) {
     CAPTURE(type, static_cast<int>(family), static_cast<int>(answer_kind));
     const auto server = bind_loopback(family);
     const auto question = example_question(type);
     ServerState state;
+    /// 发送指定回答类型的响应供 UDP 查询结果校验。
     auto worker = serve_once(server, state, [&](const net::Datagram& request,
                              const net::Deadline& deadline, std::stop_token) {
         send_reply(server.socket, request.sender,
@@ -236,19 +247,19 @@ void check_query_answer(net::IpFamily family, std::uint16_t type, AnswerKind ans
     CHECK(result->response.additional.empty());
 }
 
-TEST_CASE("Local IPv4 UDP queries preserve A AAAA and CNAME answers",
+TEST_CASE("本地 IPv4 UDP 查询保留 A、AAAA 和 CNAME 回答",
           "[udp_query][integration]") {
     check_query_answer(net::IpFamily::V4, 1, AnswerKind::A);
     check_query_answer(net::IpFamily::V4, 28, AnswerKind::Aaaa);
     check_query_answer(net::IpFamily::V4, 1, AnswerKind::Cname);
 }
 
-TEST_CASE("Local IPv6 UDP queries preserve AAAA answers",
+TEST_CASE("本地 IPv6 UDP 查询保留 AAAA 回答",
           "[udp_query][integration]") {
     check_query_answer(net::IpFamily::V6, 28, AnswerKind::Aaaa);
 }
 
-TEST_CASE("UDP accepts empty answers DNS error codes and the TC flag",
+TEST_CASE("UDP 接受空回答、DNS 错误响应码和 TC 标志",
           "[udp_query][integration]") {
     struct Sample {
         std::uint8_t rcode;
@@ -261,6 +272,7 @@ TEST_CASE("UDP accepts empty answers DNS error codes and the TC flag",
         CAPTURE(sample.rcode, sample.truncated);
         const auto server = bind_loopback();
         ServerState state;
+        /// 返回当前样本的响应码与截断状态。
         auto worker = serve_once(server, state, [&](const net::Datagram& request,
                                  const net::Deadline& deadline, std::stop_token) {
             auto response = empty_response(request.bytes);
@@ -282,10 +294,11 @@ TEST_CASE("UDP accepts empty answers DNS error codes and the TC flag",
     }
 }
 
-TEST_CASE("UDP can generate a transaction ID and match the echoed response",
+TEST_CASE("UDP 自动生成事务 ID 并匹配原样返回的响应",
           "[udp_query][integration]") {
     const auto server = bind_loopback();
     ServerState state;
+    /// 原样使用请求事务 ID 返回有效响应。
     auto worker = serve_once(server, state, [&](const net::Datagram& request,
                              const net::Deadline& deadline, std::stop_token) {
         send_reply(server.socket, request.sender, empty_response(request.bytes), deadline, state);
@@ -300,7 +313,7 @@ TEST_CASE("UDP can generate a transaction ID and match the echoed response",
     CHECK(result->response.header.id == *sent_id);
 }
 
-TEST_CASE("UDP keeps waiting after malformed and mismatched replies",
+TEST_CASE("UDP 在畸形和不匹配响应后继续等待",
           "[udp_query][integration]") {
     for (const auto rejection : {Rejection::Id, Rejection::Qr, Rejection::Opcode,
                                  Rejection::Count, Rejection::Name, Rejection::Type,
@@ -308,6 +321,7 @@ TEST_CASE("UDP keeps waiting after malformed and mismatched replies",
         CAPTURE(static_cast<int>(rejection));
         const auto server = bind_loopback();
         ServerState state;
+        /// 先发送被拒绝的响应，再发送有效响应以验证继续接收。
         auto worker = serve_once(server, state, [&](const net::Datagram& request,
                                  const net::Deadline& deadline, std::stop_token) {
             if (send_reply(server.socket, request.sender,
@@ -327,7 +341,7 @@ TEST_CASE("UDP keeps waiting after malformed and mismatched replies",
     }
 }
 
-TEST_CASE("UDP ignores a different source before parsing its packet",
+TEST_CASE("UDP 在解析报文前忽略不同来源",
           "[udp_query][integration]") {
     for (const bool send_valid_afterward : {false, true}) {
         CAPTURE(send_valid_afterward);
@@ -335,6 +349,7 @@ TEST_CASE("UDP ignores a different source before parsing its packet",
         const auto stranger = bind_loopback();
         REQUIRE(server.endpoint != stranger.endpoint);
         ServerState state;
+        /// 从其他来源发送数据，并按场景决定是否随后发送有效响应。
         auto worker = serve_once(server, state, [&](const net::Datagram& request,
                                  const net::Deadline& deadline, std::stop_token) {
             const dns::Packet malformed{std::byte{0}};
@@ -360,12 +375,13 @@ TEST_CASE("UDP ignores a different source before parsing its packet",
     }
 }
 
-TEST_CASE("UDP reports the latest bad response from the requested server",
+TEST_CASE("UDP 报告指定服务器最近一次无效响应",
           "[udp_query][integration]") {
     for (const bool malformed_last : {false, true}) {
         CAPTURE(malformed_last);
         const auto server = bind_loopback();
         ServerState state;
+        /// 按场景顺序发送畸形或不匹配响应以验证最近拒绝原因。
         auto worker = serve_once(server, state, [&](const net::Datagram& request,
                                  const net::Deadline& deadline, std::stop_token) {
             const auto first = malformed_last ? Rejection::Id : Rejection::Malformed;
@@ -396,7 +412,7 @@ TEST_CASE("UDP reports the latest bad response from the requested server",
     }
 }
 
-TEST_CASE("A silent local UDP server times out after a single query",
+TEST_CASE("本地 UDP 服务器无响应时单次查询超时",
           "[udp_query][integration]") {
     const auto server = bind_loopback();
     const auto started_at = net::Deadline::Clock::now();
@@ -421,10 +437,11 @@ TEST_CASE("A silent local UDP server times out after a single query",
     CHECK(duplicate.error().code == net::NetworkErrorCode::TimedOut);
 }
 
-TEST_CASE("Continuous unrelated UDP replies cannot renew the query budget",
+TEST_CASE("连续无关 UDP 响应不能延长查询预算",
           "[udp_query][integration]") {
     const auto server = bind_loopback();
     ServerState state;
+    /// 持续发送事务不匹配的响应，验证查询截止时间不会延长。
     auto worker = serve_once(server, state, [&](const net::Datagram& request,
                              const net::Deadline& deadline, std::stop_token stop) {
         const auto response = rejected_response(request.bytes, Rejection::Id);
@@ -452,10 +469,10 @@ TEST_CASE("Continuous unrelated UDP replies cannot renew the query budget",
     CHECK(result.error().code == app::UdpQueryErrorCode::InvalidResponse);
     CHECK(result.error().ignored_datagrams > 1);
     CHECK(elapsed >= 200ms);
-    CHECK(elapsed < 1000ms); // A renewed budget would outlive the two-second sender.
+    CHECK(elapsed < 1000ms); // 若每次响应都重置预算，查询将超过发送线程的两秒时限。
 }
 
-TEST_CASE("Invalid UDP query inputs fail before sending a packet",
+TEST_CASE("无效 UDP 查询输入在发包前失败",
           "[udp_query][integration]") {
     const auto server = bind_loopback();
     for (const auto budget : {99ms, 30001ms}) {
@@ -501,4 +518,4 @@ TEST_CASE("Invalid UDP query inputs fail before sending a packet",
     CHECK(unexpected.error().code == net::NetworkErrorCode::TimedOut);
 }
 
-} // namespace
+} // 匿名命名空间

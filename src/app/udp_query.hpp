@@ -40,16 +40,16 @@ using UdpQueryErrorDetail = std::variant<std::monostate, dns::DnsEncodeError,
 
 struct UdpQueryError {
     UdpQueryErrorCode code;
-    // InvalidResponse retains the latest rejection from the requested server.
+    // 响应无效时保留指定服务器最近一次被拒绝的响应详情。
     UdpQueryErrorDetail detail{};
     std::size_t ignored_datagrams{};
 };
 
-// Sends one UDP query. One deadline covers preparation, socket creation and all
-// responses; unrelated datagrams do not renew it. TC is retained without fallback.
+/// 在一个总预算内执行 UDP 查询并保留 TC 标志，不触发 TCP 回退。
+// 准备、套接字创建和所有响应共享截止时间，无关数据报不会延长预算。
 [[nodiscard]] std::expected<UdpQueryResult, UdpQueryError>
 query_udp(const dns::DnsQuestion& question, const net::Endpoint& server,
           std::chrono::milliseconds budget = std::chrono::milliseconds{1500},
           std::optional<std::uint16_t> transaction_id = std::nullopt);
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

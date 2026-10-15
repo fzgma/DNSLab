@@ -9,12 +9,14 @@ namespace {
 constexpr std::size_t max_label_length = 63;
 constexpr std::size_t max_wire_length = 255;
 
+/// 判断字节是否为允许出现在主机名中的 ASCII 字母或数字。
 constexpr bool is_ascii_alphanumeric(unsigned char value) noexcept {
     return (value >= 'A' && value <= 'Z') ||
            (value >= 'a' && value <= 'z') ||
            (value >= '0' && value <= '9');
 }
 
+/// 仅将 ASCII 大写字母折叠为小写，保持其他字节不变。
 constexpr unsigned char fold_ascii(unsigned char value) noexcept {
     if (value >= 'A' && value <= 'Z') {
         return static_cast<unsigned char>(value + ('a' - 'A'));
@@ -22,8 +24,9 @@ constexpr unsigned char fold_ascii(unsigned char value) noexcept {
     return value;
 }
 
-} // namespace
+} // 命名空间
 
+/// 按标签校验查询名称，并保留原输入的字母大小写。
 std::expected<DnsName, NameInputError>
 parse_ascii_name(std::string_view input) {
     if (input.empty()) {
@@ -34,7 +37,7 @@ parse_ascii_name(std::string_view input) {
     }
 
     DnsName name;
-    std::size_t wire_length = 1; // Reserve the terminating root byte.
+    std::size_t wire_length = 1; // 预留末尾根标签的一个字节。
     std::size_t label_start = 0;
     while (label_start < input.size()) {
         const auto dot = input.find('.', label_start);
@@ -77,6 +80,7 @@ parse_ascii_name(std::string_view input) {
     return name;
 }
 
+/// 预检全部标签长度后，将名称写为不使用压缩的 DNS 字节序列。
 std::expected<EncodedName, DnsEncodeError> encode_name(const DnsName& name) {
     std::size_t wire_length = 1;
     for (std::size_t index = 0; index < name.labels.size(); ++index) {
@@ -105,6 +109,7 @@ std::expected<EncodedName, DnsEncodeError> encode_name(const DnsName& name) {
     return encoded;
 }
 
+/// 迭代展开名称与压缩指针，并分别维护展开长度和原路径消费长度。
 std::expected<DecodedName, DnsParseError>
 decode_name(std::span<const std::byte> packet, std::size_t start) {
     DnsName name;
@@ -118,6 +123,7 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
         if (cursor >= packet.size()) {
             return std::unexpected(DnsParseError{DnsParseErrorCode::NameOutOfBounds, cursor});
         }
+        // 普通标签也可能重新进入既有路径，因此每次读取前都检查访问记录。
         if (!visited.insert(cursor).second) {
             return std::unexpected(DnsParseError{DnsParseErrorCode::CompressionLoop, cursor});
         }
@@ -138,6 +144,7 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
                 return std::unexpected(DnsParseError{
                     DnsParseErrorCode::CompressionPointerNotBackward, cursor});
             }
+            // 跳转目标不占原字段长度，只有第一个指针计入 consumed。
             if (!jumped) {
                 consumed += 2;
             }
@@ -156,7 +163,7 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
             return DecodedName{std::move(name), consumed};
         }
 
-        // cursor is within packet, so subtracting its length byte is safe.
+        // 已确认游标位于报文内，先减去长度字节可安全检查剩余空间。
         if (length > packet.size() - cursor - 1) {
             return std::unexpected(DnsParseError{DnsParseErrorCode::NameOutOfBounds, cursor});
         }
@@ -180,6 +187,7 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
     }
 }
 
+/// 将标签格式化为带尾点的可显示名称，并转义点、反斜线和不可打印字节。
 std::string format_name(const DnsName& name) {
     if (name.labels.empty()) {
         return ".";
@@ -203,6 +211,7 @@ std::string format_name(const DnsName& name) {
     return result;
 }
 
+/// 保持标签边界不变，仅按 ASCII 大小写折叠比较两个名称。
 bool names_equal_case_insensitive(const DnsName& a, const DnsName& b) noexcept {
     if (a.labels.size() != b.labels.size()) {
         return false;
@@ -223,4 +232,4 @@ bool names_equal_case_insensitive(const DnsName& a, const DnsName& b) noexcept {
     return true;
 }
 
-} // namespace dnslab::dns
+} // 命名空间 dnslab::dns

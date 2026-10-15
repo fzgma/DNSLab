@@ -19,18 +19,19 @@ using detail::would_block;
 constexpr std::size_t minimum_message_size = 12;
 constexpr std::size_t maximum_message_size = 65535;
 
+/// 按平台识别表示非阻塞连接尚未完成的错误码。
 bool connect_pending(int error) noexcept {
 #if defined(_WIN32)
-    // WSAEINPROGRESS/WSAEINTR describe legacy blocking calls, not this
-    // nonblocking connection attempt; preserve those native failures.
+    // WSAEINPROGRESS 和 WSAEINTR 描述旧式阻塞调用，不代表此次非阻塞连接挂起；
+    // 保留这些原生失败，避免误将它们转换成等待超时。
     return error == WSAEWOULDBLOCK || error == WSAEALREADY;
 #else
     return error == EINPROGRESS || error == EALREADY || error == EINTR;
 #endif
 }
 
-// Connecting needs its own completion check: Winsock reports a failed connect
-// in exceptfds, while ordinary stream writability is not proof of success.
+/// 等待非阻塞连接结束，并通过 SO_ERROR 确认实际成功或失败。
+// Winsock 用异常集合报告连接失败，普通流的可写事件本身不能证明连接成功。
 std::expected<void, NetworkError>
 finish_connect(NativeSocket handle, const Deadline& deadline) {
     constexpr auto operation = NetworkOperation::Connect;
@@ -115,8 +116,9 @@ finish_connect(NativeSocket handle, const Deadline& deadline) {
     }
 }
 
-} // namespace
+} // 命名空间
 
+/// 发起连接并在尚未完成时进入专用等待流程，全程共享原截止时间。
 std::expected<void, NetworkError>
 connect_socket(Socket& socket, const Endpoint& destination, const Deadline& deadline) {
     constexpr auto operation = NetworkOperation::Connect;
@@ -144,6 +146,7 @@ connect_socket(Socket& socket, const Endpoint& destination, const Deadline& dead
     return finish_connect(handle, deadline);
 }
 
+/// 循环处理部分发送和暂不可写状态，直到缓冲区发送完毕或预算耗尽。
 std::expected<void, NetworkError>
 send_all(Socket& socket, std::span<const std::byte> bytes, const Deadline& deadline) {
     constexpr auto operation = NetworkOperation::Send;
@@ -164,6 +167,7 @@ send_all(Socket& socket, std::span<const std::byte> bytes, const Deadline& deadl
         const auto sent = ::send(handle, reinterpret_cast<const char*>(bytes.data()),
                                  static_cast<int>(length), 0);
 #else
+        // 避免对端关闭时 SIGPIPE 终止进程，将失败交由错误返回处理。
         const auto sent = ::send(handle, bytes.data(), length, MSG_NOSIGNAL);
 #endif
         const int error = sent < 0 ? last_error() : 0;
@@ -193,6 +197,7 @@ send_all(Socket& socket, std::span<const std::byte> bytes, const Deadline& deadl
     return {};
 }
 
+/// 循环接收至指定长度，严格区分暂不可读与连接已关闭。
 std::expected<void, NetworkError>
 receive_exact(Socket& socket, std::span<std::byte> bytes, const Deadline& deadline) {
     constexpr auto operation = NetworkOperation::Receive;
@@ -242,6 +247,7 @@ receive_exact(Socket& socket, std::span<std::byte> bytes, const Deadline& deadli
     return {};
 }
 
+/// 校验消息长度后依次发送长度前缀和正文，两段使用同一截止时间。
 std::expected<void, NetworkError>
 send_tcp_message(Socket& socket, std::span<const std::byte> bytes, const Deadline& deadline) {
     if (!socket.valid()) {
@@ -262,6 +268,7 @@ send_tcp_message(Socket& socket, std::span<const std::byte> bytes, const Deadlin
     return send_all(socket, bytes, deadline);
 }
 
+/// 先完整读取并验证前缀，再按可信长度分配和接收正文。
 std::expected<std::vector<std::byte>, NetworkError>
 receive_tcp_message(Socket& socket, const Deadline& deadline) {
     std::array<std::byte, 2> prefix{};
@@ -283,4 +290,4 @@ receive_tcp_message(Socket& socket, const Deadline& deadline) {
     return bytes;
 }
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

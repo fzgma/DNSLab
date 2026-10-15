@@ -14,6 +14,7 @@ namespace {
 
 using namespace dnslab::dns;
 
+/// 返回 example.com 名称的固定 DNS 字节表示。
 Packet example_wire_name() {
     return {std::byte{0x07}, std::byte{0x65}, std::byte{0x78}, std::byte{0x61},
             std::byte{0x6D}, std::byte{0x70}, std::byte{0x6C}, std::byte{0x65},
@@ -21,6 +22,7 @@ Packet example_wire_name() {
             std::byte{0x00}};
 }
 
+/// 逐字节核对名称编码结果，并记录失败字节的索引。
 void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     REQUIRE(packet.size() == expected.size());
     for (std::size_t index = 0; index < expected.size(); ++index) {
@@ -30,6 +32,7 @@ void check_bytes(const Packet& packet, std::span<const std::byte> expected) {
     }
 }
 
+/// 验证名称输入错误类别和原始输入偏移。
 void check_input_error(std::string_view input, NameInputErrorCode code,
                        std::size_t offset) {
     const auto result = parse_ascii_name(input);
@@ -38,6 +41,7 @@ void check_input_error(std::string_view input, NameInputErrorCode code,
     CHECK(result.error().offset == offset);
 }
 
+/// 验证指定起点的名称解码错误及报文偏移。
 void check_decode_error(std::span<const std::byte> packet, std::size_t start,
                         DnsParseErrorCode code, std::size_t offset) {
     const auto result = decode_name(packet, start);
@@ -46,7 +50,7 @@ void check_decode_error(std::span<const std::byte> packet, std::size_t start,
     CHECK(result.error().offset == offset);
 }
 
-TEST_CASE("ASCII name input preserves case and accepts a single trailing dot",
+TEST_CASE("ASCII 名称输入保留大小写并接受一个尾点",
           "[name_codec][input]") {
     const std::vector<std::string> expected{"ExAmPlE", "COM"};
     for (const auto input : {"ExAmPlE.COM", "ExAmPlE.COM."}) {
@@ -57,7 +61,7 @@ TEST_CASE("ASCII name input preserves case and accepts a single trailing dot",
     }
 }
 
-TEST_CASE("ASCII name input accepts numeric labels and existing Punycode",
+TEST_CASE("ASCII 名称输入接受数字标签和已有 Punycode",
           "[name_codec][input]") {
     struct Sample {
         std::string_view input;
@@ -78,7 +82,7 @@ TEST_CASE("ASCII name input accepts numeric labels and existing Punycode",
     }
 }
 
-TEST_CASE("ASCII query names reject inputs made only of digits and dots",
+TEST_CASE("ASCII 查询名称拒绝仅由数字和点组成的输入",
           "[name_codec][input]") {
     for (const auto input : {"0", "0.", "123", "123.", "1.2.3", "1.2.3.",
                              "1.2.3.4", "1.2.3.4.", "999.1.1.1", "999.1.1.1."}) {
@@ -87,7 +91,7 @@ TEST_CASE("ASCII query names reject inputs made only of digits and dots",
     }
 }
 
-TEST_CASE("Numeric query names still report syntax and length errors first",
+TEST_CASE("纯数字查询名称仍优先报告语法和长度错误",
           "[name_codec][input][bounds]") {
     check_input_error("1..2", NameInputErrorCode::EmptyLabel, 2);
     check_input_error("123 ", NameInputErrorCode::InvalidCharacter, 3);
@@ -103,7 +107,7 @@ TEST_CASE("Numeric query names still report syntax and length errors first",
                       NameInputErrorCode::NameTooLong, 192);
 }
 
-TEST_CASE("The root name has no labels and a one-byte wire representation",
+TEST_CASE("根名没有标签且报文表示只占一个字节",
           "[name_codec][input][encode][decode][format]") {
     const auto parsed = parse_ascii_name(".");
     REQUIRE(parsed.has_value());
@@ -121,7 +125,7 @@ TEST_CASE("The root name has no labels and a one-byte wire representation",
     CHECK(format_name(DnsName{}) == ".");
 }
 
-TEST_CASE("ASCII name input rejects empty names and empty labels",
+TEST_CASE("ASCII 名称输入拒绝空名称和空标签",
           "[name_codec][input][bounds]") {
     check_input_error("", NameInputErrorCode::EmptyName, 0);
     check_input_error(".example", NameInputErrorCode::EmptyLabel, 0);
@@ -131,7 +135,7 @@ TEST_CASE("ASCII name input rejects empty names and empty labels",
     check_input_error("example.com..", NameInputErrorCode::EmptyLabel, 12);
 }
 
-TEST_CASE("ASCII name input rejects invalid bytes at their original offsets",
+TEST_CASE("ASCII 名称输入在原始偏移处报告非法字节",
           "[name_codec][input]") {
     struct Sample {
         std::string input;
@@ -147,10 +151,10 @@ TEST_CASE("ASCII name input rejects invalid bytes at their original offsets",
         Sample{std::string{"ab\0cd", 5}, 2},
         Sample{std::string{"ex\xC3\xA9.com"}, 2},
         Sample{std::string{"a"} + static_cast<char>(0xFF), 1},
-        Sample{"example\xEF\xBC\x8E" "com", 7}, // U+FF0E fullwidth full stop.
-        Sample{"\xEF\xBC\xA1" ".example", 0}, // U+FF21 fullwidth A.
-        Sample{"ex\xE2\x80\x8B" "ample.com", 2}, // U+200B zero width space.
-        Sample{"a\xC2\xA0" "b", 1}, // U+00A0 no-break space.
+        Sample{"example\xEF\xBC\x8E" "com", 7}, // U+FF0E 全角句点。
+        Sample{"\xEF\xBC\xA1" ".example", 0}, // U+FF21 全角字母 A。
+        Sample{"ex\xE2\x80\x8B" "ample.com", 2}, // U+200B 零宽空格。
+        Sample{"a\xC2\xA0" "b", 1}, // U+00A0 不换行空格。
     };
 
     for (const auto& sample : samples) {
@@ -160,7 +164,7 @@ TEST_CASE("ASCII name input rejects invalid bytes at their original offsets",
     }
 }
 
-TEST_CASE("ASCII name input rejects leading and trailing hyphens",
+TEST_CASE("ASCII 名称输入拒绝标签首尾的连字符",
           "[name_codec][input]") {
     check_input_error("-", NameInputErrorCode::HyphenAtBoundary, 0);
     check_input_error("-abc", NameInputErrorCode::HyphenAtBoundary, 0);
@@ -169,7 +173,7 @@ TEST_CASE("ASCII name input rejects leading and trailing hyphens",
     check_input_error("a.b-.", NameInputErrorCode::HyphenAtBoundary, 3);
 }
 
-TEST_CASE("ASCII name input enforces the 63-byte label limit",
+TEST_CASE("ASCII 名称输入遵守标签 63 字节上限",
           "[name_codec][input][bounds]") {
     const std::string valid_label(63, 'a');
     const auto valid = parse_ascii_name(valid_label);
@@ -182,7 +186,7 @@ TEST_CASE("ASCII name input enforces the 63-byte label limit",
                       NameInputErrorCode::LabelTooLong, 3);
 }
 
-TEST_CASE("ASCII name input counts label lengths and the root in the 255-byte limit",
+TEST_CASE("ASCII 名称的 255 字节上限包含标签长度字节和根标签",
           "[name_codec][input][bounds]") {
     const std::string prefix = std::string(63, 'a') + "." +
                                std::string(63, 'b') + "." +
@@ -204,7 +208,7 @@ TEST_CASE("ASCII name input counts label lengths and the root in the 255-byte li
                       NameInputErrorCode::NameTooLong, 192);
 }
 
-TEST_CASE("Name encoding matches the example.com golden wire bytes",
+TEST_CASE("名称编码匹配 example.com 的基准报文字节",
           "[name_codec][encode]") {
     const DnsName name{{"example", "com"}};
     const auto result = encode_name(name);
@@ -220,7 +224,7 @@ TEST_CASE("Name encoding matches the example.com golden wire bytes",
     }
 }
 
-TEST_CASE("Numeric wire names remain valid independently of query input rules",
+TEST_CASE("纯数字报文名称不受查询输入规则限制",
           "[name_codec][encode][decode]") {
     const DnsName name{{"1", "2", "3", "4"}};
     const Packet wire{std::byte{1}, std::byte{0x31}, std::byte{1}, std::byte{0x32},
@@ -238,7 +242,7 @@ TEST_CASE("Numeric wire names remain valid independently of query input rules",
     CHECK(format_name(decoded->name) == "1.2.3.4.");
 }
 
-TEST_CASE("Name encoding validates labels supplied without the input parser",
+TEST_CASE("名称编码校验未经输入解析器构造的标签",
           "[name_codec][encode][bounds]") {
     struct Sample {
         DnsName name;
@@ -265,7 +269,7 @@ TEST_CASE("Name encoding validates labels supplied without the input parser",
     }
 }
 
-TEST_CASE("Name encoding accepts exactly 255 wire bytes",
+TEST_CASE("名称编码接受恰好 255 字节的报文表示",
           "[name_codec][encode][bounds]") {
     const DnsName name{{std::string(63, 'a'), std::string(63, 'a'),
                         std::string(63, 'a'), std::string(61, 'a')}};
@@ -281,7 +285,7 @@ TEST_CASE("Name encoding accepts exactly 255 wire bytes",
     check_bytes(result->bytes, expected);
 }
 
-TEST_CASE("Ordinary name decoding matches the golden wire bytes",
+TEST_CASE("普通名称解码匹配基准报文字节",
           "[name_codec][decode]") {
     const auto result = decode_name(example_wire_name(), 0);
     REQUIRE(result.has_value());
@@ -290,7 +294,7 @@ TEST_CASE("Ordinary name decoding matches the golden wire bytes",
     CHECK(result->consumed == 13);
 }
 
-TEST_CASE("Ordinary name decoding honors offsets and stops after the root byte",
+TEST_CASE("普通名称解码遵守起始偏移并在根字节后停止",
           "[name_codec][decode]") {
     Packet packet{std::byte{0xAA}, std::byte{0xBB}};
     const auto wire_name = example_wire_name();
@@ -311,7 +315,7 @@ TEST_CASE("Ordinary name decoding honors offsets and stops after the root byte",
     CHECK(root->consumed == 1);
 }
 
-TEST_CASE("Ordinary name decoding accepts the 63-byte label boundary",
+TEST_CASE("普通名称解码接受 63 字节标签边界",
           "[name_codec][decode][bounds]") {
     Packet packet(65, std::byte{0x61});
     packet.front() = std::byte{63};
@@ -324,7 +328,7 @@ TEST_CASE("Ordinary name decoding accepts the 63-byte label boundary",
     CHECK(result->consumed == 65);
 }
 
-TEST_CASE("Ordinary name decoding enforces the expanded 255-byte limit",
+TEST_CASE("普通名称解码遵守展开后 255 字节上限",
           "[name_codec][decode][bounds]") {
     Packet valid(255, std::byte{0x61});
     valid[0] = std::byte{63};
@@ -349,11 +353,11 @@ TEST_CASE("Ordinary name decoding enforces the expanded 255-byte limit",
     check_decode_error(invalid, 0, DnsParseErrorCode::ExpandedNameTooLong, 192);
 }
 
-TEST_CASE("Ordinary name decoding rejects every truncation of a golden name",
+TEST_CASE("普通名称解码拒绝基准名称的所有截断形式",
           "[name_codec][decode][bounds]") {
     const auto packet = example_wire_name();
     const std::span<const std::byte> bytes{packet};
-    // Offsets name the incomplete label, or the missing next length byte.
+    // 错误偏移定位不完整标签，或缺失的下一个长度字节。
     constexpr std::array<std::size_t, 13> expected_offsets{
         0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 12};
 
@@ -368,7 +372,7 @@ TEST_CASE("Ordinary name decoding rejects every truncation of a golden name",
     check_decode_error(offset_packet, 1, DnsParseErrorCode::NameOutOfBounds, 1);
 }
 
-TEST_CASE("Ordinary name decoding rejects invalid start offsets without overflow",
+TEST_CASE("普通名称解码拒绝非法起始偏移且不发生溢出",
           "[name_codec][decode][bounds]") {
     const Packet packet{std::byte{0x00}};
     constexpr auto maximum = std::numeric_limits<std::size_t>::max();
@@ -380,7 +384,7 @@ TEST_CASE("Ordinary name decoding rejects invalid start offsets without overflow
     check_decode_error({}, 0, DnsParseErrorCode::NameOutOfBounds, 0);
 }
 
-TEST_CASE("Ordinary name decoding rejects reserved label encodings",
+TEST_CASE("普通名称解码拒绝保留的标签编码",
           "[name_codec][decode]") {
     for (const auto marker : {0x40, 0x7F, 0x80, 0xBF}) {
         CAPTURE(marker);
@@ -390,7 +394,7 @@ TEST_CASE("Ordinary name decoding rejects reserved label encodings",
     }
 }
 
-TEST_CASE("Wire names preserve arbitrary label octets and format them safely",
+TEST_CASE("报文名称保留任意标签字节并安全格式化",
           "[name_codec][encode][decode][format]") {
     const std::string label{
         '\0', '\t', '\n', static_cast<char>(0x1F), ' ', '.', '\\',
@@ -413,7 +417,7 @@ TEST_CASE("Wire names preserve arbitrary label octets and format them safely",
           "\\000\\009\\010\\031\\032\\046\\092\\127\\128\\255A.");
 }
 
-TEST_CASE("Name formatting preserves printable characters and label boundaries",
+TEST_CASE("名称格式化保留可打印字符和标签边界",
           "[name_codec][format]") {
     CHECK(format_name(DnsName{{"ExAmPlE", "COM"}}) == "ExAmPlE.COM.");
     CHECK(format_name(DnsName{{"A-z_!~"}}) == "A-z_!~.");
@@ -421,7 +425,7 @@ TEST_CASE("Name formatting preserves printable characters and label boundaries",
     CHECK(format_name(DnsName{{"a", "b"}}) == "a.b.");
 }
 
-TEST_CASE("Name comparison folds only ASCII letters",
+TEST_CASE("名称比较仅折叠 ASCII 字母大小写",
           "[name_codec][compare]") {
     const DnsName uppercase{{"ABCDEFGHIJKLMNOPQRSTUVWXYZ", "ExAmPlE"}};
     const DnsName lowercase{{"abcdefghijklmnopqrstuvwxyz", "example"}};
@@ -440,7 +444,7 @@ TEST_CASE("Name comparison folds only ASCII letters",
                                             DnsName{{high_different}}));
 }
 
-TEST_CASE("Name comparison preserves label boundaries and bytes after NUL",
+TEST_CASE("名称比较保留标签边界及 NUL 后的字节",
           "[name_codec][compare]") {
     CHECK_FALSE(names_equal_case_insensitive(DnsName{{"ab", "c"}},
                                             DnsName{{"a", "bc"}}));
@@ -452,4 +456,4 @@ TEST_CASE("Name comparison preserves label boundaries and bytes after NUL",
     CHECK_FALSE(names_equal_case_insensitive(DnsName{{first}}, DnsName{{second}}));
 }
 
-} // namespace
+} // 命名空间

@@ -12,6 +12,7 @@ namespace {
 using namespace dnslab::net;
 using namespace std::string_view_literals;
 
+/// 断言无效加密端点在内存校验阶段失败且没有后端错误信息。
 void check_invalid(const std::expected<EncryptedEndpoint, EncryptedError>& result) {
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == EncryptedErrorCode::InvalidEndpoint);
@@ -19,9 +20,9 @@ void check_invalid(const std::expected<EncryptedEndpoint, EncryptedError>& resul
     CHECK(result.error().http_status == 0);
 }
 
-} // namespace
+} // 匿名命名空间
 
-TEST_CASE("DoH endpoints normalize authority while preserving path and query", "[encrypted][endpoint]") {
+TEST_CASE("DoH 端点规范化服务器地址并保留路径和查询参数", "[encrypted][endpoint]") {
     const std::array pairs{
         std::pair{"https://DNS.Example/dns-query"sv, "https://dns.example:443/dns-query"sv},
         std::pair{"HTTPS://LOCALHOST"sv, "https://localhost:443/"sv},
@@ -43,7 +44,7 @@ TEST_CASE("DoH endpoints normalize authority while preserving path and query", "
     }
 }
 
-TEST_CASE("DoT endpoints preserve address identity and use port 853 by default", "[encrypted][endpoint]") {
+TEST_CASE("DoT 端点保留地址身份且默认使用 853 端口", "[encrypted][endpoint]") {
     const std::array pairs{
         std::pair{"DNS.Example"sv, "dns.example:853"sv},
         std::pair{"localhost."sv, "localhost:853"sv},
@@ -64,7 +65,7 @@ TEST_CASE("DoT endpoints preserve address identity and use port 853 by default",
     }
 }
 
-TEST_CASE("DoH requires an HTTPS authority without credentials or fragments", "[encrypted][endpoint]") {
+TEST_CASE("DoH 必须使用不含凭据或片段的 HTTPS 地址", "[encrypted][endpoint]") {
     for (const auto input : {
              "", "http://dns.example/dns-query", "ftp://dns.example/", "dns.example/dns-query",
              "https://", "https:///dns-query", "https://user@dns.example/",
@@ -80,7 +81,7 @@ TEST_CASE("DoH requires an HTTPS authority without credentials or fragments", "[
     }
 }
 
-TEST_CASE("DoT rejects URL syntax and malformed host port pairs", "[encrypted][endpoint]") {
+TEST_CASE("DoT 拒绝 URL 语法和畸形的主机端口组合", "[encrypted][endpoint]") {
     for (const auto input : {
              "", ".", "https://dns.example", "dns.example/path", "dns.example?query",
              "user@dns.example", "dns.example#fragment", "dns.example:",
@@ -92,7 +93,7 @@ TEST_CASE("DoT rejects URL syntax and malformed host port pairs", "[encrypted][e
     }
 }
 
-TEST_CASE("Encrypted endpoints reject ambiguous numeric address spellings", "[encrypted][endpoint]") {
+TEST_CASE("加密端点拒绝含糊的数字地址写法", "[encrypted][endpoint]") {
     for (const auto host : {"127.1", "2130706433", "1.2.3", "999.1.1.1",
                             "127.000.0.1", "0177.0.0.1", "0x7f000001", "0x7f.1",
                             "0x7f.0.0.1", "0X7F000001"}) {
@@ -102,7 +103,7 @@ TEST_CASE("Encrypted endpoints reject ambiguous numeric address spellings", "[en
     }
 }
 
-TEST_CASE("Encrypted endpoint errors retain offsets of raw invalid bytes", "[encrypted][endpoint]") {
+TEST_CASE("加密端点错误保留原始非法字节的偏移", "[encrypted][endpoint]") {
     for (const char invalid : {' ', '\t', '\r', '\n', '\0', '\\', '#',
                                static_cast<char>(0x7f), static_cast<char>(0xc2)}) {
         const std::string dot = std::string{"dns"} + invalid + ".example";
@@ -122,7 +123,7 @@ TEST_CASE("Encrypted endpoint errors retain offsets of raw invalid bytes", "[enc
     CHECK(empty.error().offset == 0);
 }
 
-TEST_CASE("Encrypted endpoint port parsing rejects arbitrarily long values", "[encrypted][endpoint]") {
+TEST_CASE("加密端点端口解析拒绝任意超长数值", "[encrypted][endpoint]") {
     const std::string huge(2000, '9');
     check_invalid(parse_dot_endpoint(std::string{"dns.example:"} + huge));
     check_invalid(parse_doh_endpoint(std::string{"https://dns.example:"} + huge + "/"));

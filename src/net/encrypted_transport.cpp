@@ -23,22 +23,27 @@ using Packet = std::vector<std::byte>;
 constexpr std::size_t minimum_message = 12;
 constexpr std::size_t maximum_message = 65535;
 
+/// 构造带原始输入偏移的加密端点参数错误。
 EncryptedError invalid_endpoint(std::size_t offset = 0) {
     return {EncryptedErrorCode::InvalidEndpoint, 0, 0, offset};
 }
 
+/// 构造不依赖后端错误码的预算耗尽错误。
 EncryptedError timeout() { return {EncryptedErrorCode::TimedOut}; }
 
+/// 将一个 ASCII 大写字母转为小写，保持其他字符不变。
 char lower_ascii(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
 }
 
+/// 复制文本并仅折叠 ASCII 字母大小写。
 std::string lowercase(std::string_view input) {
     std::string result{input};
     std::transform(result.begin(), result.end(), result.begin(), lower_ascii);
     return result;
 }
 
+/// 拒绝加密地址中的空白、控制字节、非 ASCII、反斜线和片段标记。
 std::expected<void, EncryptedError> validate_characters(std::string_view input) {
     if (input.empty()) {
         return std::unexpected(invalid_endpoint());
@@ -52,6 +57,7 @@ std::expected<void, EncryptedError> validate_characters(std::string_view input) 
     return {};
 }
 
+/// 将十进制端口限制在 1 至 65535，并保留原输入中的错误位置。
 std::expected<std::uint16_t, EncryptedError>
 parse_port(std::string_view input, std::size_t offset) {
     if (input.empty()) {
@@ -75,6 +81,7 @@ parse_port(std::string_view input, std::size_t offset) {
     return static_cast<std::uint16_t>(result);
 }
 
+/// 识别可能被后端按旧式数字 IP 解释的主机文本。
 bool ambiguous_numeric_host(std::string_view host) {
     if (!host.empty() && host.back() == '.') {
         host.remove_suffix(1);
@@ -89,6 +96,7 @@ bool ambiguous_numeric_host(std::string_view host) {
             hexadecimal = true;
             part.remove_prefix(2);
         }
+        // 按当前分段的十进制或十六进制语法检查，防止域名被后端改写为 IP。
         if (part.empty() || !std::all_of(part.begin(), part.end(), [hexadecimal](char digit) {
                 return (digit >= '0' && digit <= '9') ||
                     (hexadecimal && ((digit >= 'a' && digit <= 'f') ||
@@ -103,6 +111,7 @@ bool ambiguous_numeric_host(std::string_view host) {
     }
 }
 
+/// 拆分并校验主机及端口，按传输规则处理 IPv6 方括号与默认端口。
 std::expected<std::string, EncryptedError>
 parse_authority(std::string_view input, std::uint16_t default_port,
                  std::size_t offset, bool allow_bare_ipv6) {
@@ -165,8 +174,8 @@ parse_authority(std::string_view input, std::uint16_t default_port,
         address->port = port;
         return format_endpoint(*address);
     }
-    // curl also recognizes legacy inet_aton forms such as 0x7f000001 and
-    // 0x7f.1. They must not silently change a validated hostname into an IP.
+    // curl 也识别 0x7f000001、0x7f.1 等旧式 inet_aton 格式；
+    // 必须拒绝这些含糊输入，避免已验证的主机名被静默改写为 IP。
     if (ambiguous_numeric_host(host)) {
         return std::unexpected(invalid_endpoint(offset));
     }
@@ -180,11 +189,13 @@ parse_authority(std::string_view input, std::uint16_t default_port,
     return lowercase(host) + ":" + std::to_string(port);
 }
 
+/// 判断 URL 百分号转义后的字符是否为十六进制数字。
 bool is_hex(char value) {
     return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
            (value >= 'A' && value <= 'F');
 }
 
+/// 将 curl 错误映射为稳定类别，同时保留原始后端错误码。
 EncryptedError backend_error(CURLcode code) {
     auto category = EncryptedErrorCode::Backend;
     if (code == CURLE_OPERATION_TIMEDOUT) {
@@ -199,7 +210,9 @@ EncryptedError backend_error(CURLcode code) {
 }
 
 struct CurlRuntime {
+    // 函数内静态实例只初始化一次，成功后才在进程退出阶段清理。
     CURLcode status{curl_global_init(CURL_GLOBAL_DEFAULT)};
+    /// 仅在全局初始化成功时释放 curl 的全局资源。
     ~CurlRuntime() {
         if (status == CURLE_OK) {
             curl_global_cleanup();
@@ -212,8 +225,10 @@ using HeaderList = std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)>;
 
 class EasyOptions {
 public:
+    /// 借用请求句柄，并初始化首个选项错误的记录状态。
     explicit EasyOptions(CURL* handle) : handle_(handle) {}
 
+    /// 设置请求选项，保留首个失败且不让后续设置覆盖它。
     template <typename T>
     void set(CURLoption option, T value) {
         if (status_ == CURLE_OK) {
@@ -221,6 +236,7 @@ public:
         }
     }
 
+    /// 返回已经记录的首个选项错误，全部成功时返回 CURLE_OK。
     [[nodiscard]] CURLcode status() const { return status_; }
 
 private:
@@ -228,11 +244,13 @@ private:
     CURLcode status_{CURLE_OK};
 };
 
+/// 将剩余毫秒钳制到 curl 使用的 long 范围，避免平台整数截断。
 long remaining_ms(const Deadline& deadline) {
     return static_cast<long>(std::min(deadline.remaining().count(),
         static_cast<std::chrono::milliseconds::rep>((std::numeric_limits<long>::max)())));
 }
 
+/// 在 curl 进度回调中检查原截止时间，到期时中止传输。
 int check_progress(void* context, curl_off_t, curl_off_t, curl_off_t, curl_off_t) noexcept {
     return static_cast<const Deadline*>(context)->expired() ? 1 : 0;
 }
@@ -243,9 +261,11 @@ struct BodyBuffer {
     bool allocation_failed{};
 };
 
+/// 累积受长度上限约束的 HTTPS 正文，截断或分配失败时中止回调。
 std::size_t receive_body(char* data, std::size_t size, std::size_t count,
                          void* context) noexcept {
     auto& body = *static_cast<BodyBuffer*>(context);
+    // 先用除法比较剩余空间，同时避免 size 与 count 相乘溢出。
     if (size != 0 && count > (maximum_message - body.bytes.size()) / size) {
         body.oversized = true;
         return 0;
@@ -255,12 +275,14 @@ std::size_t receive_body(char* data, std::size_t size, std::size_t count,
         const auto* begin = reinterpret_cast<const std::byte*>(data);
         body.bytes.insert(body.bytes.end(), begin, begin + length);
     } catch (...) {
+        // C 回调边界不能传播 C++ 异常，保存原因后让 curl 停止传输。
         body.allocation_failed = true;
         return 0;
     }
     return length;
 }
 
+/// 忽略媒体类型大小写与参数，检查响应是否为 DNS 消息正文。
 bool valid_content_type(const char* type) {
     if (type == nullptr) {
         return false;
@@ -276,6 +298,7 @@ bool valid_content_type(const char* type) {
     return lowercase(value) == "application/dns-message";
 }
 
+/// 等待 curl 借出的套接字就绪，平台重试始终沿用同一截止时间。
 std::expected<void, EncryptedError>
 wait_tls_socket(curl_socket_t socket, bool reading, const Deadline& deadline) {
     for (;;) {
@@ -325,6 +348,7 @@ wait_tls_socket(curl_socket_t socket, bool reading, const Deadline& deadline) {
     }
 }
 
+/// 使用 curl 的 TLS 写接口发送全部字节，仅在暂不可写时等待。
 std::expected<void, EncryptedError>
 send_tls(CURL* handle, curl_socket_t socket, std::span<const std::byte> bytes,
           const Deadline& deadline) {
@@ -353,6 +377,7 @@ send_tls(CURL* handle, curl_socket_t socket, std::span<const std::byte> bytes,
     return {};
 }
 
+/// 使用 curl 的 TLS 读接口填满缓冲区，提前关闭或到期均返回失败。
 std::expected<void, EncryptedError>
 receive_tls(CURL* handle, curl_socket_t socket, std::span<std::byte> bytes,
              const Deadline& deadline) {
@@ -361,8 +386,7 @@ receive_tls(CURL* handle, curl_socket_t socket, std::span<std::byte> bytes,
             return std::unexpected(timeout());
         }
         std::size_t count{};
-        // Always drain TLS/library buffers first; the socket can be unreadable
-        // even though decrypted application bytes are already waiting in curl.
+        // 先读取 TLS 库内部缓存；即使套接字当前不可读，curl 也可能已有解密数据。
         const auto status = curl_easy_recv(handle, bytes.data(), bytes.size(), &count);
         if (deadline.expired()) {
             return std::unexpected(timeout());
@@ -383,6 +407,7 @@ receive_tls(CURL* handle, curl_socket_t socket, std::span<std::byte> bytes,
     return {};
 }
 
+/// 在 Linux 运行环境寻找系统 CA 文件，Windows 留给系统证书库处理。
 std::optional<std::string> system_ca_file() {
 #if !defined(_WIN32)
     for (const char* path : {"/etc/ssl/certs/ca-certificates.crt",
@@ -397,12 +422,14 @@ std::optional<std::string> system_ca_file() {
     return std::nullopt;
 }
 
-} // namespace
+} // 命名空间
 
+/// 在联网前检查显式 CA 文件的路径、可读性和 PEM 证书边界。
 std::expected<void, EncryptedError> validate_tls_options(const TlsOptions& tls) {
     if (tls.ca_file.empty()) {
         return {};
     }
+    /// 为各种 CA 文件预检失败生成统一的参数错误。
     const auto invalid = [] {
         return std::unexpected(EncryptedError{EncryptedErrorCode::InvalidTlsOptions});
     };
@@ -436,6 +463,7 @@ std::expected<void, EncryptedError> validate_tls_options(const TlsOptions& tls) 
     return {};
 }
 
+/// 解析 HTTPS 地址，规范化主机和端口，并验证路径中的百分号转义。
 std::expected<EncryptedEndpoint, EncryptedError> parse_doh_endpoint(std::string_view input) {
     const auto characters = validate_characters(input);
     if (!characters) {
@@ -465,6 +493,7 @@ std::expected<EncryptedEndpoint, EncryptedError> parse_doh_endpoint(std::string_
     return EncryptedEndpoint{EncryptedTransport::Doh, "https://" + *authority + suffix};
 }
 
+/// 解析 DoT 主机地址，将未指定的端口规范为 853。
 std::expected<EncryptedEndpoint, EncryptedError> parse_dot_endpoint(std::string_view input) {
     const auto characters = validate_characters(input);
     if (!characters) {
@@ -477,6 +506,7 @@ std::expected<EncryptedEndpoint, EncryptedError> parse_dot_endpoint(std::string_
     return EncryptedEndpoint{EncryptedTransport::Dot, *authority};
 }
 
+/// 校验公开输入并配置严格 TLS 验证，随后按选定传输完成一次加密交换。
 std::expected<Packet, EncryptedError>
 exchange_encrypted(const EncryptedEndpoint& endpoint, std::span<const std::byte> query,
                    const Deadline& deadline, const TlsOptions& tls) {
@@ -510,7 +540,7 @@ exchange_encrypted(const EncryptedEndpoint& endpoint, std::span<const std::byte>
          (version->features & CURL_VERSION_HTTP2) == 0)) {
         return std::unexpected(EncryptedError{EncryptedErrorCode::BackendUnavailable});
     }
-    // Callback state and header storage outlive curl_easy_cleanup as well.
+    // 逆序析构使请求句柄先清理，回调状态和请求头在清理期间仍然有效。
     BodyBuffer body;
     HeaderList headers{nullptr, curl_slist_free_all};
     EasyHandle handle{curl_easy_init(), curl_easy_cleanup};
@@ -539,8 +569,8 @@ exchange_encrypted(const EncryptedEndpoint& endpoint, std::span<const std::byte>
     options.set(CURLOPT_SSL_OPTIONS, 0L);
     options.set(CURLOPT_CAINFO, ca_file ? ca_file->c_str() : static_cast<const char*>(nullptr));
 #if !defined(_WIN32)
-    // Schannel does not support CAPATH, even when clearing it with nullptr.
-    // Linux must clear the build-time directory and use the runtime CA file.
+    // Schannel 不支持 CAPATH，传入 nullptr 也会失败；Linux 则需清除构建时目录，
+    // 确保只使用当前运行环境发现或用户指定的 CA 文件。
     options.set(CURLOPT_CAPATH, static_cast<const char*>(nullptr));
 #endif
     options.set(CURLOPT_NOPROGRESS, 0L);
@@ -575,8 +605,8 @@ exchange_encrypted(const EncryptedEndpoint& endpoint, std::span<const std::byte>
     if (deadline.expired()) {
         return std::unexpected(timeout());
     }
-    // c-ares keeps resolution asynchronous. Both curl timers and the callback
-    // use the remaining original budget; no stage receives a fresh timeout.
+    // c-ares 保证名称解析异步执行；curl 定时器与回调都使用原预算剩余量，
+    // 不为解析、握手或收发阶段重新分配完整超时。
     const auto budget = remaining_ms(deadline);
     if (budget == 0) {
         return std::unexpected(timeout());
@@ -657,4 +687,4 @@ exchange_encrypted(const EncryptedEndpoint& endpoint, std::span<const std::byte>
     return response;
 }
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

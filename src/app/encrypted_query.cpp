@@ -11,10 +11,12 @@ namespace {
 
 using Clock = net::Deadline::Clock;
 
+/// 计算从指定单调时钟起点至今的微秒耗时。
 std::chrono::microseconds elapsed_since(Clock::time_point started_at) {
     return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - started_at);
 }
 
+/// 将加密传输错误归入输入、超时、响应或网络失败类别。
 QueryErrorCode classify(net::EncryptedErrorCode code) {
     switch (code) {
     case net::EncryptedErrorCode::TimedOut:
@@ -30,8 +32,9 @@ QueryErrorCode classify(net::EncryptedErrorCode code) {
     }
 }
 
-} // namespace
+} // 匿名命名空间
 
+/// 校验加密查询输入并完成一次消息交换，保留严格证书验证和完整失败详情。
 std::expected<EncryptedQueryResult, QueryError>
 query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& server,
                 std::chrono::milliseconds budget, const net::TlsOptions& tls,
@@ -71,6 +74,7 @@ query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& 
         return std::unexpected(QueryError{
             QueryErrorCode::Encode, packet.error(), elapsed_since(started_at)});
     }
+    // DoH 默认使用零 ID；仅为未显式提供 ID 的 DoT 查询生成随机值。
     if (!transaction_id && transport == QueryTransport::Dot) {
         try {
             std::random_device random;
@@ -90,6 +94,7 @@ query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& 
     }
 
     const auto attempt_started = Clock::now();
+    /// 将本次加密尝试的耗时、原始错误和忽略数量汇总到查询失败结果。
     const auto failed = [&](QueryErrorCode code, QueryErrorDetail detail,
                              std::size_t ignored = 0) -> std::expected<EncryptedQueryResult, QueryError> {
         std::vector<QueryAttempt> attempts;
@@ -100,6 +105,7 @@ query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& 
             code, std::move(detail), elapsed_since(started_at), ignored, std::move(attempts)});
     };
 
+    // 同一次交换覆盖解析、握手和消息收发；任何失败都直接返回，不切换明文或重置预算。
     auto received = net::exchange_encrypted(*endpoint, *packet, deadline, tls);
     if (!received) {
         return failed(classify(received.error().code), received.error());
@@ -123,4 +129,4 @@ query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& 
         elapsed_since(started_at), 0, std::move(attempts)};
 }
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

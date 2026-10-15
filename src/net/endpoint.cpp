@@ -15,6 +15,7 @@
 namespace dnslab::net {
 namespace {
 
+/// 解析四段十进制 IPv4，并拒绝越界段和多位前导零。
 std::optional<Ipv4Address> parse_ipv4(std::string_view text) {
     Ipv4Address address{};
     std::size_t start = 0;
@@ -46,11 +47,12 @@ std::optional<Ipv4Address> parse_ipv4(std::string_view text) {
     return address;
 }
 
+/// 使用系统数值转换解析 IPv6，并统一约束嵌入的 IPv4 尾部格式。
 std::optional<Ipv6Address> parse_ipv6(std::string_view text) {
     if (text.empty() || text.size() >= INET6_ADDRSTRLEN) {
         return std::nullopt;
     }
-    // Enforce the same decimal IPv4 rules for a mixed IPv6 address on all OSes.
+    // 混合地址的 IPv4 尾部也使用同一套十进制规则，避免平台解析宽严不一。
     if (text.find('.') != std::string_view::npos) {
         const auto colon = text.rfind(':');
         if (colon == std::string_view::npos || !parse_ipv4(text.substr(colon + 1))) {
@@ -68,6 +70,7 @@ std::optional<Ipv6Address> parse_ipv6(std::string_view text) {
     return address;
 }
 
+/// 校验十进制端口并保留原输入偏移，受界累加以避免溢出。
 std::expected<std::uint16_t, EndpointInputError>
 parse_port(std::string_view text, std::size_t offset) {
     if (text.empty()) {
@@ -96,6 +99,7 @@ parse_port(std::string_view text, std::size_t offset) {
     return static_cast<std::uint16_t>(port);
 }
 
+/// 使用小写十六进制格式化 IPv6，压缩最长零段且并列时选择最左侧。
 std::string format_ipv6(const Ipv6Address& address) {
     std::array<std::uint16_t, 8> words{};
     for (std::size_t index = 0; index < words.size(); ++index) {
@@ -140,12 +144,14 @@ std::string format_ipv6(const Ipv6Address& address) {
     return result;
 }
 
-} // namespace
+} // 命名空间
 
+/// 从地址变体的实际类型确定端点地址族。
 IpFamily Endpoint::family() const noexcept {
     return std::holds_alternative<Ipv4Address>(address) ? IpFamily::V4 : IpFamily::V6;
 }
 
+/// 校验输入字符后拆分地址与端口，将裸 IPv6 始终作为完整地址解析。
 std::expected<Endpoint, EndpointInputError> parse_endpoint(std::string_view input) {
     if (input.empty()) {
         return std::unexpected(EndpointInputError{EndpointInputErrorCode::EmptyInput, 0});
@@ -223,6 +229,7 @@ std::expected<Endpoint, EndpointInputError> parse_endpoint(std::string_view inpu
     return endpoint;
 }
 
+/// 将二进制地址转换为稳定文本，并显式追加端口。
 std::string format_endpoint(const Endpoint& endpoint) {
     std::string result;
     if (const auto* address = std::get_if<Ipv4Address>(&endpoint.address)) {
@@ -238,6 +245,7 @@ std::string format_endpoint(const Endpoint& endpoint) {
     return result + ":" + std::to_string(endpoint.port);
 }
 
+/// 依次解析端点，并在重复时同时返回当前输入和首次出现的位置。
 std::expected<std::vector<Endpoint>, EndpointListError>
 parse_unique_endpoints(std::span<const std::string_view> inputs) {
     std::vector<Endpoint> endpoints;
@@ -257,4 +265,4 @@ parse_unique_endpoints(std::span<const std::string_view> inputs) {
     return endpoints;
 }
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

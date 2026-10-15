@@ -20,6 +20,7 @@ using dnslab::test::TcpServer;
 using dnslab::test::TcpStream;
 using Packet = std::vector<std::byte>;
 
+/// 生成长度可控且内容确定的字节序列用于检测传输缺失或改写。
 Packet pattern(std::size_t size) {
     Packet result(size);
     for (std::size_t index = 0; index < size; ++index) {
@@ -28,6 +29,7 @@ Packet pattern(std::size_t size) {
     return result;
 }
 
+/// 在给定截止时间内连接本地测试服务器并返回客户端套接字。
 Socket connect_to(const TcpServer& server, const Deadline& deadline) {
     auto socket = Socket::open(server.endpoint().family(), SocketTransport::Tcp);
     REQUIRE(socket.has_value());
@@ -44,6 +46,7 @@ struct ConnectedPair {
     TcpStream peer;
 };
 
+/// 建立一对相互连接的本地 TCP 流供收发边界测试使用。
 ConnectedPair connected_pair() {
     TcpServer server;
     const auto deadline = Deadline::after(2s);
@@ -51,6 +54,7 @@ ConnectedPair connected_pair() {
     return {std::move(client), server.accept(deadline)};
 }
 
+/// 在主线程重新报告工作线程捕获的异常。
 void check_worker(const std::exception_ptr& error) {
     if (error) {
         try {
@@ -61,6 +65,7 @@ void check_worker(const std::exception_ptr& error) {
     }
 }
 
+/// 断言网络操作失败并保留预期错误类别、阶段及空系统码。
 template <typename T>
 void check_error(const std::expected<T, NetworkError>& result,
                  NetworkErrorCode code, NetworkOperation operation) {
@@ -70,6 +75,7 @@ void check_error(const std::expected<T, NetworkError>& result,
     CHECK(result.error().system_code == 0);
 }
 
+/// 设置原生套接字缓冲区大小以构造分段收发或背压条件。
 void set_buffer(Socket::native_handle_type handle, int option, int size) {
 #if defined(_WIN32)
     const auto result = ::setsockopt(static_cast<SOCKET>(handle), SOL_SOCKET, option,
@@ -80,6 +86,7 @@ void set_buffer(Socket::native_handle_type handle, int option, int size) {
     REQUIRE(result == 0);
 }
 
+/// 验证指定地址族的 TCP 长度帧在双向传输中保留全部字节。
 void check_roundtrip(IpFamily family) {
     TcpServer server{family};
     const auto deadline = Deadline::after(3s);
@@ -87,6 +94,7 @@ void check_roundtrip(IpFamily family) {
     auto peer = server.accept(deadline);
     std::exception_ptr worker_error;
     std::vector<Packet> seen;
+    /// 依次回显三种长度的消息，并记录收到的完整帧。
     std::jthread worker([&] {
         try {
             for (int iteration = 0; iteration < 3; ++iteration) {
@@ -114,23 +122,24 @@ void check_roundtrip(IpFamily family) {
     }
 }
 
-TEST_CASE("IPv4 TCP framing preserves minimum maximum and multi-byte lengths",
+TEST_CASE("IPv4 TCP 长度帧保留最小、最大和跨字节长度",
           "[tcp][ipv4][framing]") {
     check_roundtrip(IpFamily::V4);
 }
 
-TEST_CASE("IPv6 TCP framing preserves minimum maximum and multi-byte lengths",
+TEST_CASE("IPv6 TCP 长度帧保留最小、最大和跨字节长度",
           "[tcp][ipv6][framing]") {
     check_roundtrip(IpFamily::V6);
 }
 
-TEST_CASE("TCP receives fragmented prefixes and bodies without consuming the next frame",
+TEST_CASE("TCP 接收分段前缀和正文且不消耗下一帧",
           "[tcp][framing][partial]") {
     auto pair = connected_pair();
     const auto deadline = Deadline::after(2s);
     const auto first = pattern(17);
     const auto second = pattern(12);
     std::exception_ptr worker_error;
+    /// 分段发送两个连续帧以验证精确接收不会越过当前帧。
     std::jthread worker([&] {
         try {
             const std::array high{std::byte{0}};
@@ -159,7 +168,7 @@ TEST_CASE("TCP receives fragmented prefixes and bodies without consuming the nex
     CHECK(*received_second == second);
 }
 
-TEST_CASE("TCP send_all completes a large stream through a small send buffer",
+TEST_CASE("TCP 在小发送缓冲区下完成大数据流发送",
           "[tcp][partial][send]") {
     auto pair = connected_pair();
     set_buffer(pair.client.native_handle(), SO_SNDBUF, 4096);
@@ -167,6 +176,7 @@ TEST_CASE("TCP send_all completes a large stream through a small send buffer",
     const auto deadline = Deadline::after(3s);
     Packet received;
     std::exception_ptr worker_error;
+    /// 读取全部大数据流并保留结果供发送完整性检查。
     std::jthread worker([&] {
         try {
             std::this_thread::sleep_for(30ms);
@@ -182,7 +192,7 @@ TEST_CASE("TCP send_all completes a large stream through a small send buffer",
     CHECK(received == bytes);
 }
 
-TEST_CASE("TCP send_all honors its deadline after the stream buffer is full",
+TEST_CASE("TCP 发送缓冲区满后仍遵守截止时间",
           "[tcp][deadline][send]") {
     auto pair = connected_pair();
     set_buffer(pair.client.native_handle(), SO_SNDBUF, 4096);
@@ -191,8 +201,8 @@ TEST_CASE("TCP send_all honors its deadline after the stream buffer is full",
     const auto preparation = Deadline::after(2s);
     std::size_t queued = 0;
     bool blocked = false;
-    // Winsock may accept one large send beyond SO_SNDBUF. Fill with small
-    // native writes and prove would-block before testing the production wait.
+    // Winsock 可能接受超出 SO_SNDBUF 的一次大写入，因此先用小块原生写入填满缓冲区，
+    // 确认暂时不可写后再验证生产代码的等待行为。
     while (!preparation.expired() && queued < 1024 * 1024) {
 #if defined(_WIN32)
         const auto count = ::send(static_cast<SOCKET>(pair.client.native_handle()),
@@ -212,8 +222,8 @@ TEST_CASE("TCP send_all honors its deadline after the stream buffer is full",
         } else if (count < 0 && interrupted) {
             continue;
         } else if (count < 0 && would_block) {
-            // The first would-block can clear when already queued bytes are
-            // acknowledged. Keep filling until backpressure remains stable.
+            // 第一次暂时不可写可能在已排队字节获得确认后解除，
+            // 因此继续填充，直到背压保持稳定。
             const Deadline settle{std::min(preparation.expires_at(),
                 Deadline::Clock::now() + 250ms)};
             const auto writable = wait_socket(pair.client, WaitInterest::Write, settle);
@@ -225,7 +235,7 @@ TEST_CASE("TCP send_all honors its deadline after the stream buffer is full",
             break;
         } else {
             CAPTURE(count, error);
-            FAIL("Native stream preparation failed before reaching backpressure");
+            FAIL("原生数据流在形成背压前准备失败");
         }
     }
     REQUIRE(queued > 0);
@@ -243,7 +253,7 @@ TEST_CASE("TCP send_all honors its deadline after the stream buffer is full",
     CHECK(deadline.expires_at() == started_at + 80ms);
 }
 
-TEST_CASE("TCP partial receive followed by EOF is an explicit incomplete operation",
+TEST_CASE("TCP 部分接收后连接关闭明确报告操作未完成",
           "[tcp][eof][partial]") {
     auto pair = connected_pair();
     const auto deadline = Deadline::after(2s);
@@ -256,7 +266,7 @@ TEST_CASE("TCP partial receive followed by EOF is an explicit incomplete operati
     CHECK(Packet(buffer.begin(), buffer.begin() + 5) == sent);
 }
 
-TEST_CASE("TCP framing rejects EOF in either the length prefix or body",
+TEST_CASE("TCP 长度帧拒绝前缀或正文中的提前关闭",
           "[tcp][framing][eof]") {
     const std::array<Packet, 4> prefixes{
         Packet{}, Packet{std::byte{0}}, Packet{std::byte{0}, std::byte{12}},
@@ -273,7 +283,7 @@ TEST_CASE("TCP framing rejects EOF in either the length prefix or body",
     }
 }
 
-TEST_CASE("TCP framing rejects every declared length below a DNS header",
+TEST_CASE("TCP 长度帧拒绝所有小于 DNS 首部的声明长度",
           "[tcp][framing][invalid]") {
     for (unsigned length = 0; length < 12; ++length) {
         CAPTURE(length);
@@ -286,7 +296,7 @@ TEST_CASE("TCP framing rejects every declared length below a DNS header",
     }
 }
 
-TEST_CASE("TCP framing rejects invalid outgoing lengths before sending a prefix",
+TEST_CASE("TCP 在发送前缀前拒绝无效的待发送帧长度",
           "[tcp][framing][invalid]") {
     auto pair = connected_pair();
     const auto deadline = Deadline::after(2s);
@@ -304,7 +314,7 @@ TEST_CASE("TCP framing rejects invalid outgoing lengths before sending a prefix"
     CHECK(timed_out);
 }
 
-TEST_CASE("TCP connect refusal reports the native connection error",
+TEST_CASE("TCP 连接被拒绝时保留原生连接错误",
           "[tcp][connect][error]") {
     auto reserved = Socket::open(IpFamily::V4, SocketTransport::Tcp);
     REQUIRE(reserved.has_value());
@@ -317,9 +327,9 @@ TEST_CASE("TCP connect refusal reports the native connection error",
     REQUIRE(bound.has_value());
     auto client = Socket::open(IpFamily::V4, SocketTransport::Tcp);
     REQUIRE(client.has_value());
-    // The port stays reserved but has no listener, avoiding a close/rebind race.
-    // Windows can retry loopback SYNs for roughly two seconds before refusing.
-    // This case checks the native refusal, independently of the short-budget tests.
+    // 整个尝试期间保留端口但不监听，避免关闭再绑定产生端口复用竞态。
+    // Windows 可能重试回环 SYN 约两秒后才报告拒绝连接。
+    // 本用例检查原生拒绝错误，与短预算用例分开验证。
     const auto result = connect_socket(*client, *bound, Deadline::after(5s));
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().operation == NetworkOperation::Connect);
@@ -331,7 +341,7 @@ TEST_CASE("TCP connect refusal reports the native connection error",
 #endif
 }
 
-TEST_CASE("TCP reset retains system errors and subsequent writes do not raise SIGPIPE",
+TEST_CASE("TCP 连接重置保留系统错误且后续写入不触发 SIGPIPE",
           "[tcp][reset][send]") {
     auto pair = connected_pair();
     const auto deadline = Deadline::after(2s);
@@ -349,7 +359,7 @@ TEST_CASE("TCP reset retains system errors and subsequent writes do not raise SI
     CHECK(sent.error().system_code != 0);
 }
 
-TEST_CASE("TCP prefix and trickling body share one receive deadline",
+TEST_CASE("TCP 前缀和逐字节正文共用一次接收截止时间",
           "[tcp][framing][deadline]") {
     auto pair = connected_pair();
     const auto producer_deadline = Deadline::after(2s);
@@ -357,6 +367,7 @@ TEST_CASE("TCP prefix and trickling body share one receive deadline",
     const auto deadline = Deadline::after(90ms, started_at);
     std::exception_ptr worker_error;
     std::size_t sent_count = 0;
+    /// 缓慢发送前缀及正文以验证部分接收不会重置预算。
     std::jthread worker([&](std::stop_token stop) {
         try {
             const std::array prefix{std::byte{0}, std::byte{12}};
@@ -386,7 +397,7 @@ TEST_CASE("TCP prefix and trickling body share one receive deadline",
     CHECK(deadline.expires_at() == started_at + 90ms);
 }
 
-TEST_CASE("TCP rejects invalid arguments and expired deadlines without connecting",
+TEST_CASE("TCP 拒绝无效参数和已过期预算且不建立连接",
           "[tcp][invalid][deadline]") {
     TcpServer server;
     const auto deadline = Deadline::after(2s);
@@ -427,4 +438,4 @@ TEST_CASE("TCP rejects invalid arguments and expired deadlines without connectin
     REQUIRE(receive_exact(pair.client, {}, deadline).has_value());
 }
 
-} // namespace
+} // 匿名命名空间

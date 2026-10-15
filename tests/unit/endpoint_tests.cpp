@@ -12,6 +12,7 @@ namespace {
 
 using namespace dnslab::net;
 
+/// 验证端点解析失败时的错误类别和原输入偏移。
 void check_error(std::string_view input, EndpointInputErrorCode code,
                  std::size_t offset) {
     const auto result = parse_endpoint(input);
@@ -20,7 +21,7 @@ void check_error(std::string_view input, EndpointInputErrorCode code,
     CHECK(result.error().offset == offset);
 }
 
-TEST_CASE("IPv4 endpoints retain address bytes and normalize explicit ports",
+TEST_CASE("IPv4 端点保留地址字节并规范化显式端口",
           "[endpoint][ipv4]") {
     for (const auto input : {"192.0.2.1", "192.0.2.1:53", "192.0.2.1:00053"}) {
         CAPTURE(input);
@@ -42,7 +43,7 @@ TEST_CASE("IPv4 endpoints retain address bytes and normalize explicit ports",
     }
 }
 
-TEST_CASE("IPv6 endpoint conversion keeps network byte order without socket setup",
+TEST_CASE("IPv6 地址转换保留网络字节序且无需初始化套接字",
           "[endpoint][ipv6]") {
     for (const auto input : {"2001:db8::1", "[2001:DB8:0:0:0:0:0:1]:00053"}) {
         CAPTURE(input);
@@ -70,7 +71,7 @@ TEST_CASE("IPv6 endpoint conversion keeps network byte order without socket setu
     }
 }
 
-TEST_CASE("IPv6 formatting compresses the longest leftmost nontrivial zero run",
+TEST_CASE("IPv6 格式化压缩最长且最靠左的多段连续零",
           "[endpoint][format]") {
     struct Sample {
         std::string_view input;
@@ -99,7 +100,7 @@ TEST_CASE("IPv6 formatting compresses the longest leftmost nontrivial zero run",
     }
 }
 
-TEST_CASE("Mixed IPv6 tails use strict IPv4 syntax and normalize to hexadecimal",
+TEST_CASE("混合 IPv6 尾部遵循严格 IPv4 语法并规范为十六进制",
           "[endpoint][ipv6][format]") {
     struct Sample {
         std::string_view input;
@@ -126,7 +127,7 @@ TEST_CASE("Mixed IPv6 tails use strict IPv4 syntax and normalize to hexadecimal"
     }
 }
 
-TEST_CASE("Endpoint address parsing rejects hostnames URLs and nonstandard IP syntax",
+TEST_CASE("端点解析拒绝主机名 URL 和非标准 IP 格式",
           "[endpoint][invalid]") {
     for (const auto input : {"example.com", "localhost", "https://1.2.3.4", "1.2.3.4/path",
                              "user@1.2.3.4", "1", "1.2.3", "1.2.3.4.5", "1..3.4",
@@ -147,7 +148,7 @@ TEST_CASE("Endpoint address parsing rejects hostnames URLs and nonstandard IP sy
     check_error("[::1]:", EndpointInputErrorCode::MissingPort, 6);
 }
 
-TEST_CASE("Endpoint validation preserves byte offsets for hidden and unsupported characters",
+TEST_CASE("端点校验保留隐藏字符及不支持字符的原始字节偏移",
           "[endpoint][invalid]") {
     struct Sample {
         std::string input;
@@ -169,7 +170,7 @@ TEST_CASE("Endpoint validation preserves byte offsets for hidden and unsupported
     }
 }
 
-TEST_CASE("Endpoint ports accept decimal boundaries and reject overflow and signs",
+TEST_CASE("端口接受十进制边界值并拒绝溢出及正负号",
           "[endpoint][port]") {
     struct Valid {
         std::string_view input;
@@ -194,7 +195,7 @@ TEST_CASE("Endpoint ports accept decimal boundaries and reject overflow and sign
     }
 }
 
-TEST_CASE("Endpoint lists reject equivalent spellings and identify the first input",
+TEST_CASE("端点列表拒绝等价写法并标识首次出现的位置",
           "[endpoint][list]") {
     struct Sample {
         std::array<std::string_view, 3> inputs;
@@ -216,7 +217,7 @@ TEST_CASE("Endpoint lists reject equivalent spellings and identify the first inp
     }
 }
 
-TEST_CASE("Endpoint lists preserve order and distinguish ports and address families",
+TEST_CASE("端点列表保留顺序并区分端口和地址族",
           "[endpoint][list]") {
     const std::array<std::string_view, 3> inputs{
         "192.0.2.1", "192.0.2.1:54", "::ffff:192.0.2.1"};
@@ -236,7 +237,7 @@ TEST_CASE("Endpoint lists preserve order and distinguish ports and address famil
     CHECK(empty->empty());
 }
 
-TEST_CASE("Endpoint lists preserve invalid input errors before later duplicates",
+TEST_CASE("端点列表优先报告非法输入而非之后的重复项",
           "[endpoint][list]") {
     const std::array<std::string_view, 3> inputs{"1.2.3.4", "[::1]:0", "1.2.3.4"};
     const auto result = parse_unique_endpoints(inputs);
@@ -247,4 +248,4 @@ TEST_CASE("Endpoint lists preserve invalid input errors before later duplicates"
     CHECK_FALSE(result.error().first_duplicate_index.has_value());
 }
 
-} // namespace
+} // 命名空间

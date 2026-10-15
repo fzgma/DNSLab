@@ -28,7 +28,7 @@ static_assert(noexcept(compile_time_header.is_response()) &&
               noexcept(compile_time_header.checking_disabled()) &&
               noexcept(compile_time_header.rcode()));
 
-TEST_CASE("DNS header fields default to zero", "[dns_header]") {
+TEST_CASE("DNS 报文头字段默认均为零", "[dns_header]") {
     const DnsHeader header;
 
     CHECK(header.id == 0);
@@ -44,7 +44,7 @@ TEST_CASE("DNS header fields default to zero", "[dns_header]") {
     CHECK(header.rcode() == 0);
 }
 
-TEST_CASE("Each DNS header bit affects only its assigned field", "[dns_header]") {
+TEST_CASE("DNS 报文头各标志位只影响对应字段", "[dns_header]") {
     for (unsigned int bit = 0; bit < 16; ++bit) {
         const auto flags = static_cast<std::uint16_t>(1U << bit);
         const DnsHeader header{0xbeef, flags};
@@ -67,7 +67,7 @@ TEST_CASE("Each DNS header bit affects only its assigned field", "[dns_header]")
     }
 }
 
-TEST_CASE("DNS header accessors handle every flag being set", "[dns_header]") {
+TEST_CASE("DNS 报文头访问器支持所有标志同时置位", "[dns_header]") {
     const DnsHeader header{0xabcd, 0xffff};
 
     CHECK(header.is_response());
@@ -83,11 +83,11 @@ TEST_CASE("DNS header accessors handle every flag being set", "[dns_header]") {
     CHECK(header.flags == 0xffff);
 }
 
-TEST_CASE("DNS opcode and rcode remain independent across all values",
+TEST_CASE("DNS 操作码和响应码在所有取值下保持独立",
           "[dns_header]") {
     for (unsigned int opcode = 0; opcode < 16; ++opcode) {
         for (unsigned int rcode = 0; rcode < 16; ++rcode) {
-            // All bits outside OPCODE and RCODE stay set, including reserved bit 6.
+            // 操作码和响应码之外的位保持置位，其中包括第 6 位保留位。
             const auto flags = static_cast<std::uint16_t>(
                 0x87f0U | (opcode << 11) | rcode);
             const DnsHeader header{0x4567, flags};
@@ -108,7 +108,7 @@ TEST_CASE("DNS opcode and rcode remain independent across all values",
     }
 }
 
-TEST_CASE("Unknown DNS header bits remain in the raw flags", "[dns_header]") {
+TEST_CASE("未知 DNS 报文头标志位保留在原始 flags 中", "[dns_header]") {
     const DnsHeader known{0x1234, 0x9185};
     const DnsHeader with_reserved_bit{0x1234, 0x91c5};
 
@@ -126,4 +126,4 @@ TEST_CASE("Unknown DNS header bits remain in the raw flags", "[dns_header]") {
     CHECK(with_reserved_bit.flags == 0x91c5);
 }
 
-} // namespace
+} // 命名空间

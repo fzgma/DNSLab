@@ -10,6 +10,7 @@ using namespace dnslab;
 using namespace dnslab::test;
 using namespace std::chrono_literals;
 
+/// 断言尝试记录恰为一次成功的 UDP 截断响应和后续 TCP 查询。
 void check_two_attempts(const std::vector<app::QueryAttempt>& attempts) {
     REQUIRE(attempts.size() == 2);
     CHECK(attempts[0].transport == app::QueryTransport::Udp);
@@ -18,6 +19,7 @@ void check_two_attempts(const std::vector<app::QueryAttempt>& attempts) {
     CHECK(attempts[1].transport == app::QueryTransport::Tcp);
 }
 
+/// 验证自动回退共用同一端点、问题、事务 ID 和原始查询报文。
 void check_fallback_success(net::IpFamily family, bool generated_id = false,
                             bool final_truncated = false) {
     TcpServer tcp{family};
@@ -28,6 +30,7 @@ void check_fallback_success(net::IpFamily family, bool generated_id = false,
     const auto question = example_question(type);
     WorkerState state;
     dns::Packet tcp_request;
+    /// 先返回 UDP 截断响应，再接收同一查询并发送 TCP 回答。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
@@ -86,6 +89,7 @@ void check_fallback_success(net::IpFamily family, bool generated_id = false,
 
 enum class BadTc { Id, Qr, Opcode, Count, Name, Type, Class, Malformed };
 
+/// 构造带 TC 但不能通过解析或事务匹配的响应。
 dns::Packet bad_tc_response(const dns::Packet& query, BadTc rejection) {
     auto response = empty_response(query, 0, true);
     switch (rejection) {
@@ -112,37 +116,38 @@ dns::Packet bad_tc_response(const dns::Packet& query, BadTc rejection) {
         response.back() = std::byte{3};
         break;
     case BadTc::Malformed:
-        response.resize(12); // The retained QDCOUNT requires an absent question.
+        response.resize(12); // 保留的 QDCOUNT 仍声明存在已被截去的问题。
         break;
     }
     return response;
 }
 
-} // namespace
+} // 匿名命名空间
 
-TEST_CASE("Auto falls back from matching IPv4 UDP TC using the same query", "[query][auto]") {
+TEST_CASE("自动模式在匹配的 IPv4 UDP 截断响应后使用同一查询回退", "[query][auto]") {
     check_fallback_success(net::IpFamily::V4);
 }
 
-TEST_CASE("Auto falls back from matching IPv6 UDP TC using the same query", "[query][auto][ipv6]") {
+TEST_CASE("自动模式在匹配的 IPv6 UDP 截断响应后使用同一查询回退", "[query][auto][ipv6]") {
     check_fallback_success(net::IpFamily::V6);
 }
 
-TEST_CASE("Auto generates one transaction ID shared by UDP and TCP", "[query][auto]") {
+TEST_CASE("自动模式只生成一个供 UDP 和 TCP 共用的事务 ID", "[query][auto]") {
     check_fallback_success(net::IpFamily::V4, true);
 }
 
-TEST_CASE("Auto retains TCP TC without starting a third attempt", "[query][auto]") {
+TEST_CASE("自动模式保留 TCP 截断响应且不启动第三次尝试", "[query][auto]") {
     check_fallback_success(net::IpFamily::V4, false, true);
 }
 
-TEST_CASE("Auto retains UDP TC when the TCP stream closes or framing fails", "[query][auto]") {
+TEST_CASE("自动模式在 TCP 关闭或帧错误时保留 UDP 截断响应", "[query][auto]") {
     for (const bool invalid_length : {false, true}) {
         CAPTURE(invalid_length);
         TcpServer tcp;
         UdpServer udp{tcp.endpoint()};
         WorkerState state;
         dns::Packet tcp_request;
+        /// 先返回 UDP 截断响应，再构造 TCP 关闭或帧错误。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             const auto request = udp.receive(deadline);
             state.request = request.bytes;
@@ -180,7 +185,7 @@ TEST_CASE("Auto retains UDP TC when the TCP stream closes or framing fails", "[q
     }
 }
 
-TEST_CASE("Auto retains UDP TC when the TCP connection is refused", "[query][auto]") {
+TEST_CASE("自动模式在 TCP 连接被拒绝时保留 UDP 截断响应", "[query][auto]") {
     auto reserved = net::Socket::open(net::IpFamily::V4, net::SocketTransport::Tcp);
     REQUIRE(reserved.has_value());
     const auto bound = net::bind_socket(*reserved,
@@ -189,16 +194,17 @@ TEST_CASE("Auto retains UDP TC when the TCP connection is refused", "[query][aut
     const auto local = net::local_endpoint(*reserved);
     REQUIRE(local.has_value());
     const auto endpoint = *local;
-    // Keep the port reserved without listening so refusal cannot race with reuse.
+    // 保留端口但不监听，避免拒绝连接测试与端口复用发生竞态。
     UdpServer udp{endpoint};
     WorkerState state;
+    /// 发送 UDP 截断响应，让客户端尝试连接未监听的 TCP 端口。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
         udp.send(request.sender, empty_response(state.request, 0, true), deadline);
     });
-    // Windows can retry the local connection for over two seconds before
-    // reporting refusal; this case checks the error, not a short timeout.
+    // Windows 可能重试本地连接超过两秒后才
+    // 报告拒绝；本用例检查该错误，短超时另有用例覆盖。
     const auto result = app::query_server(example_question(), endpoint,
                                          app::TransportMode::Auto, 5000ms, query_id);
     worker.join();
@@ -214,10 +220,11 @@ TEST_CASE("Auto retains UDP TC when the TCP connection is refused", "[query][aut
     CHECK(error.attempts[1].outcome.error().code == app::QueryErrorCode::Network);
 }
 
-TEST_CASE("Explicit UDP retains TC without opening a TCP connection", "[query][auto]") {
+TEST_CASE("显式 UDP 保留截断响应且不打开 TCP 连接", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
     WorkerState state;
+    /// 返回 UDP 截断响应以验证显式 UDP 模式不会回退。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
@@ -236,12 +243,13 @@ TEST_CASE("Explicit UDP retains TC without opening a TCP connection", "[query][a
     CHECK_FALSE(tcp.pending(net::Deadline::after(30ms)));
 }
 
-TEST_CASE("Auto accepts nontruncated UDP including DNS error rcodes without TCP", "[query][auto]") {
+TEST_CASE("自动模式接受非截断 UDP 响应及 DNS 错误码且不连接 TCP", "[query][auto]") {
     for (const auto rcode : {0U, 2U, 3U}) {
         CAPTURE(rcode);
         TcpServer tcp;
         UdpServer udp{tcp.endpoint()};
         WorkerState state;
+        /// 返回非截断 UDP 响应以验证自动模式直接结束。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             const auto request = udp.receive(deadline);
             state.request = request.bytes;
@@ -259,7 +267,7 @@ TEST_CASE("Auto accepts nontruncated UDP including DNS error rcodes without TCP"
     }
 }
 
-TEST_CASE("Auto UDP timeout does not open a TCP connection or retransmit", "[query][auto]") {
+TEST_CASE("自动模式 UDP 超时不连接 TCP 也不重传", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
     const auto result = app::query_server(example_question(), tcp.endpoint(),
@@ -278,12 +286,13 @@ TEST_CASE("Auto UDP timeout does not open a TCP connection or retransmit", "[que
     CHECK(duplicate.error().code == net::NetworkErrorCode::TimedOut);
 }
 
-TEST_CASE("Auto ignores TC from another UDP source without opening TCP", "[query][auto]") {
+TEST_CASE("自动模式忽略其他 UDP 来源的截断响应且不连接 TCP", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
     UdpServer stranger;
     REQUIRE(stranger.endpoint() != udp.endpoint());
     WorkerState state;
+    /// 从不同 UDP 来源发送截断响应以验证来源校验。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
@@ -301,13 +310,14 @@ TEST_CASE("Auto ignores TC from another UDP source without opening TCP", "[query
     CHECK_FALSE(tcp.pending(net::Deadline::after(30ms)));
 }
 
-TEST_CASE("Auto rejects malformed and mismatched UDP TC before considering fallback", "[query][auto]") {
+TEST_CASE("自动模式在考虑回退前拒绝畸形和不匹配的 UDP 截断响应", "[query][auto]") {
     for (const auto rejection : {BadTc::Id, BadTc::Qr, BadTc::Opcode, BadTc::Count,
                                  BadTc::Name, BadTc::Type, BadTc::Class, BadTc::Malformed}) {
         CAPTURE(static_cast<int>(rejection));
         TcpServer tcp;
         UdpServer udp{tcp.endpoint()};
         WorkerState state;
+        /// 返回无法通过校验的截断响应以验证不触发回退。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             const auto request = udp.receive(deadline);
             state.request = request.bytes;
@@ -333,12 +343,13 @@ TEST_CASE("Auto rejects malformed and mismatched UDP TC before considering fallb
     }
 }
 
-TEST_CASE("Auto can accept later nontruncated UDP after rejecting a TC response", "[query][auto]") {
+TEST_CASE("自动模式拒绝截断响应后仍可接受后续非截断 UDP 响应", "[query][auto]") {
     for (const auto rejection : {BadTc::Id, BadTc::Malformed}) {
         CAPTURE(static_cast<int>(rejection));
         TcpServer tcp;
         UdpServer udp{tcp.endpoint()};
         WorkerState state;
+        /// 先发送无效截断响应，再发送有效非截断响应。
         auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
             const auto request = udp.receive(deadline);
             state.request = request.bytes;
@@ -360,11 +371,12 @@ TEST_CASE("Auto can accept later nontruncated UDP after rejecting a TC response"
     }
 }
 
-TEST_CASE("Auto records ignored messages independently for UDP and TCP", "[query][auto]") {
+TEST_CASE("自动模式分别记录 UDP 和 TCP 忽略的消息", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
     WorkerState state;
     dns::Packet tcp_request;
+    /// 分别向 UDP 与 TCP 发送无效消息和有效响应以验证独立计数。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
@@ -389,11 +401,12 @@ TEST_CASE("Auto records ignored messages independently for UDP and TCP", "[query
     check_answer(*result, AnswerKind::A);
 }
 
-TEST_CASE("Auto UDP delay and TCP delay consume the same total budget", "[query][auto]") {
+TEST_CASE("自动模式的 UDP 延迟与 TCP 延迟消耗同一总预算", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
     WorkerState state;
     dns::Packet tcp_request;
+    /// 在 UDP 和 TCP 两阶段分别引入延迟，检验共享总预算。
     auto worker = start_worker(state, [&](const net::Deadline& deadline, std::stop_token stop) {
         const auto request = udp.receive(deadline);
         state.request = request.bytes;
@@ -401,7 +414,7 @@ TEST_CASE("Auto UDP delay and TCP delay consume the same total budget", "[query]
         udp.send(request.sender, empty_response(state.request, 0, true), deadline);
         auto stream = tcp.accept(deadline);
         tcp_request = stream.receive_frame(deadline);
-        // This response is within a fresh TCP budget but outside the total one.
+        // 此响应可落在重新分配的 TCP 预算内，但已超过原查询总预算。
         if (!delay(stop, 500ms)) { return; }
         stream.send_frame(answer_response(tcp_request, AnswerKind::A), deadline);
     });
@@ -423,9 +436,10 @@ TEST_CASE("Auto UDP delay and TCP delay consume the same total budget", "[query]
           result.error().elapsed);
 }
 
-TEST_CASE("Invalid auto query inputs send neither UDP nor TCP", "[query][auto]") {
+TEST_CASE("无效自动查询输入既不发送 UDP 也不连接 TCP", "[query][auto]") {
     TcpServer tcp;
     UdpServer udp{tcp.endpoint()};
+    /// 核对无效输入的错误类别且确认没有任何传输尝试。
     const auto check_error = [](const auto& result, app::QueryErrorCode code) {
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == code);

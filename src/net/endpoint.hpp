@@ -23,7 +23,9 @@ struct Endpoint {
     IpAddress address;
     std::uint16_t port{53};
 
+    /// 比较地址族、地址字节及端口，不折叠 IPv4 映射地址。
     bool operator==(const Endpoint&) const = default;
+    /// 根据地址变体返回 IPv4 或 IPv6 地址族。
     [[nodiscard]] IpFamily family() const noexcept;
 };
 
@@ -40,8 +42,8 @@ enum class EndpointInputErrorCode {
 
 struct EndpointInputError {
     EndpointInputErrorCode code;
-    // Offset in the original input; address errors identify its first byte,
-    // port range errors identify the port start, and duplicates use zero.
+    // 偏移针对原始输入；地址错误定位地址首字节，端口范围错误定位端口起点，
+    // 重复端点的偏移固定为零。
     std::size_t offset;
 };
 
@@ -51,14 +53,15 @@ struct EndpointListError {
     std::optional<std::size_t> first_duplicate_index;
 };
 
+/// 解析字面 IP 与可选端口，不解析主机名或探测网络。
 [[nodiscard]] std::expected<Endpoint, EndpointInputError>
 parse_endpoint(std::string_view input);
 
-// Always includes the port; IPv6 uses brackets and lowercase hexadecimal.
+/// 输出带端口的规范端点，IPv6 使用方括号和小写十六进制。
 [[nodiscard]] std::string format_endpoint(const Endpoint& endpoint);
 
-// Preserves input order and rejects equivalent address/family/port tuples.
+/// 保持输入顺序并拒绝地址族、地址和端口均相同的重复端点。
 [[nodiscard]] std::expected<std::vector<Endpoint>, EndpointListError>
 parse_unique_endpoints(std::span<const std::string_view> inputs);
 
-} // namespace dnslab::net
+} // 命名空间 dnslab::net

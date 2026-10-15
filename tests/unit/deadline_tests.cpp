@@ -16,6 +16,7 @@ using Milliseconds = std::chrono::milliseconds;
 using ClockDuration = Deadline::Clock::duration;
 using TimePoint = Deadline::TimePoint;
 
+/// 验证超时输入的错误类别和原始字节偏移。
 void check_input_error(std::string_view input, TimeoutInputErrorCode code,
                        std::size_t offset) {
     const auto result = parse_timeout_ms(input);
@@ -24,7 +25,7 @@ void check_input_error(std::string_view input, TimeoutInputErrorCode code,
     CHECK(result.error().offset == offset);
 }
 
-TEST_CASE("Timeout input accepts inclusive limits and leading zeroes",
+TEST_CASE("超时输入接受上下限和前导零",
           "[deadline][input]") {
     struct Sample {
         std::string input;
@@ -44,7 +45,7 @@ TEST_CASE("Timeout input accepts inclusive limits and leading zeroes",
     }
 }
 
-TEST_CASE("Timeout input rejects empty and out-of-range values without overflow",
+TEST_CASE("超时输入拒绝空值及越界数值且不发生溢出",
           "[deadline][input]") {
     check_input_error("", TimeoutInputErrorCode::EmptyValue, 0);
     for (const auto input : {"0", "0000", "99", "30001", "99999999999999999999"}) {
@@ -54,7 +55,7 @@ TEST_CASE("Timeout input rejects empty and out-of-range values without overflow"
     check_input_error(std::string(1000, '9'), TimeoutInputErrorCode::OutOfRange, 0);
 }
 
-TEST_CASE("Timeout input checks all bytes before reporting a range error",
+TEST_CASE("超时输入先检查所有字节再报告范围错误",
           "[deadline][input]") {
     struct Sample {
         std::string input;
@@ -76,7 +77,7 @@ TEST_CASE("Timeout input checks all bytes before reporting a range error",
     }
 }
 
-TEST_CASE("Deadline stores an absolute expiration without changing on reads",
+TEST_CASE("截止时间保存绝对时刻且不会因读取而变化",
           "[deadline]") {
     const auto now = TimePoint{} + 10s;
     const auto expiration = now + 1500ms;
@@ -90,7 +91,7 @@ TEST_CASE("Deadline stores an absolute expiration without changing on reads",
     CHECK(deadline.expires_at() == expiration);
 }
 
-TEST_CASE("Deadline after preserves ordinary budgets across the epoch",
+TEST_CASE("截止时间计算在跨越时钟纪元时保留普通预算",
           "[deadline]") {
     for (const auto started_at : {TimePoint{} - 1s, TimePoint{}, TimePoint{} + 1s}) {
         for (const auto budget : {100ms, 1500ms, 30000ms}) {
@@ -102,7 +103,7 @@ TEST_CASE("Deadline after preserves ordinary budgets across the epoch",
     }
 }
 
-TEST_CASE("Deadline expires exactly at its cutoff and stays at zero afterward",
+TEST_CASE("截止时间在边界处到期且之后剩余时间保持为零",
           "[deadline]") {
     const auto cutoff = TimePoint{} + 1500ms;
     const Deadline deadline{cutoff};
@@ -115,7 +116,7 @@ TEST_CASE("Deadline expires exactly at its cutoff and stays at zero afterward",
     CHECK(deadline.remaining(cutoff + 1s) == 0ms);
 }
 
-TEST_CASE("Positive remaining fractions round up to milliseconds",
+TEST_CASE("正的不足一毫秒余量向上取整",
           "[deadline]") {
     const auto now = TimePoint{};
     const ClockDuration tick{1};
@@ -128,21 +129,21 @@ TEST_CASE("Positive remaining fractions round up to milliseconds",
     CHECK(deadline.remaining(now + 1ms - tick) == 1ms);
 }
 
-TEST_CASE("UDP work and TCP fallback share one unchanged deadline",
+TEST_CASE("UDP 操作和 TCP 回退共用不变的截止时间",
           "[deadline]") {
     const auto started_at = TimePoint{} + 100s;
     const auto deadline = Deadline::after(1500ms, started_at);
 
     CHECK(deadline.remaining(started_at) == 1500ms);
-    CHECK(deadline.remaining(started_at + 400ms) == 1100ms); // UDP completes.
-    CHECK(deadline.remaining(started_at + 900ms) == 600ms); // TCP connects.
-    CHECK(deadline.remaining(started_at + 1200ms) == 300ms); // Partial receive.
+    CHECK(deadline.remaining(started_at + 400ms) == 1100ms); // UDP 完成。
+    CHECK(deadline.remaining(started_at + 900ms) == 600ms); // TCP 连接完成。
+    CHECK(deadline.remaining(started_at + 1200ms) == 300ms); // 已接收部分数据。
     CHECK(deadline.remaining(started_at + 1499ms) == 1ms);
     CHECK(deadline.expired(started_at + 1500ms));
     CHECK(deadline.expires_at() == started_at + 1500ms);
 }
 
-TEST_CASE("Each server has an independent deadline",
+TEST_CASE("每台服务器拥有独立截止时间",
           "[deadline]") {
     const auto started_at = TimePoint{};
     const auto first = Deadline::after(1500ms, started_at);
@@ -156,7 +157,7 @@ TEST_CASE("Each server has an independent deadline",
     CHECK(second.expires_at() == started_at + 2000ms);
 }
 
-TEST_CASE("Nonpositive budgets expire immediately without arithmetic",
+TEST_CASE("非正预算立即到期且无需算术换算",
           "[deadline][bounds]") {
     for (const auto started_at : {TimePoint::min(), TimePoint{}, TimePoint::max()}) {
         for (const auto budget : {Milliseconds::min(), -1ms, 0ms}) {
@@ -168,7 +169,7 @@ TEST_CASE("Nonpositive budgets expire immediately without arithmetic",
     }
 }
 
-TEST_CASE("Deadline creation saturates at the maximum time point",
+TEST_CASE("截止时间创建在最大时间点饱和",
           "[deadline][bounds]") {
     const auto almost_maximum = TimePoint::max() - 1ms;
 
@@ -181,7 +182,7 @@ TEST_CASE("Deadline creation saturates at the maximum time point",
           TimePoint::max());
 }
 
-TEST_CASE("Deadlines support time points near the minimum clock value",
+TEST_CASE("截止时间支持接近时钟最小值的时间点",
           "[deadline][bounds]") {
     const auto started_at = TimePoint::min();
     const auto deadline = Deadline::after(1ms, started_at);
@@ -192,10 +193,10 @@ TEST_CASE("Deadlines support time points near the minimum clock value",
     CHECK(Deadline{TimePoint::min()}.remaining(TimePoint::max()) == 0ms);
 }
 
-TEST_CASE("Remaining time handles the full signed clock range",
+TEST_CASE("剩余时间计算覆盖有符号时钟的完整范围",
           "[deadline][bounds]") {
-    // Split max - min into two representable halves plus one tick; this avoids
-    // overflowing the signed duration while constructing the expected result.
+    // 将最大值与最小值之差拆为两个可表示的半段及一个时钟单位，
+    // 避免构造期望结果时使有符号时长溢出。
     const auto half = std::chrono::duration_cast<Milliseconds>(ClockDuration::max());
     const auto residual = ClockDuration::max() -
                           std::chrono::duration_cast<ClockDuration>(half);
@@ -211,7 +212,7 @@ TEST_CASE("Remaining time handles the full signed clock range",
     CHECK(deadline.remaining(TimePoint::max()) == 0ms);
 }
 
-TEST_CASE("A large budget can cross the epoch without premature saturation",
+TEST_CASE("大预算可跨越时钟纪元且不会提前饱和",
           "[deadline][bounds]") {
     const auto half = std::chrono::duration_cast<Milliseconds>(ClockDuration::max());
     const auto residual = ClockDuration::max() -
@@ -226,4 +227,4 @@ TEST_CASE("A large budget can cross the epoch without premature saturation",
     CHECK(deadline.remaining(TimePoint::min()) == half + extra);
 }
 
-} // namespace
+} // 命名空间

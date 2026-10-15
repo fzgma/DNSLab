@@ -19,10 +19,12 @@ static_assert(noexcept(validate_response(std::declval<const DnsMessage&>(),
                                         std::declval<const DnsQuestion&>(),
                                         std::uint16_t{})));
 
+/// 构造用于响应匹配的 example.com IN A 问题。
 DnsQuestion example_question() {
     return {DnsName{{"example", "com"}}, 1, 1};
 }
 
+/// 为给定问题和事务 ID 构造最小响应。
 DnsMessage response_for(const DnsQuestion& question, std::uint16_t id = transaction_id) {
     DnsMessage response;
     response.header = DnsHeader{id, 0x8000};
@@ -30,6 +32,7 @@ DnsMessage response_for(const DnsQuestion& question, std::uint16_t id = transact
     return response;
 }
 
+/// 断言响应校验失败并返回预期的不匹配原因。
 void check_mismatch(const DnsMessage& response, const DnsQuestion& question,
                     std::uint16_t id, ResponseMismatch mismatch) {
     const auto result = validate_response(response, question, id);
@@ -37,14 +40,14 @@ void check_mismatch(const DnsMessage& response, const DnsQuestion& question,
     CHECK(result.error() == mismatch);
 }
 
-TEST_CASE("A matching response may have no answers", "[response_validator]") {
+TEST_CASE("匹配的响应可以没有应答记录", "[response_validator]") {
     const auto question = example_question();
     const auto response = response_for(question);
 
     CHECK(validate_response(response, question, transaction_id).has_value());
 }
 
-TEST_CASE("Response matching rejects a packet without the response bit",
+TEST_CASE("响应匹配拒绝未设置响应标志的报文",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -53,7 +56,7 @@ TEST_CASE("Response matching rejects a packet without the response bit",
     check_mismatch(response, question, transaction_id, ResponseMismatch::NotResponse);
 }
 
-TEST_CASE("Response transaction IDs match exactly including zero and the maximum",
+TEST_CASE("响应事务 ID 精确匹配并覆盖零和最大值",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     for (const auto id : std::array<std::uint16_t, 4>{0, 1, 0x1234, 0xffff}) {
@@ -65,7 +68,7 @@ TEST_CASE("Response transaction IDs match exactly including zero and the maximum
     }
 }
 
-TEST_CASE("Response matching rejects every nonstandard opcode",
+TEST_CASE("响应匹配拒绝所有非标准操作码",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -76,7 +79,7 @@ TEST_CASE("Response matching rejects every nonstandard opcode",
     }
 }
 
-TEST_CASE("A response must contain exactly one question",
+TEST_CASE("响应必须恰好包含一个问题",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -87,7 +90,7 @@ TEST_CASE("A response must contain exactly one question",
     check_mismatch(response, question, transaction_id, ResponseMismatch::QuestionCount);
 }
 
-TEST_CASE("A response question must name the requested domain",
+TEST_CASE("响应问题的名称必须与请求域名一致",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -96,7 +99,7 @@ TEST_CASE("A response question must name the requested domain",
     check_mismatch(response, question, transaction_id, ResponseMismatch::QuestionName);
 }
 
-TEST_CASE("Response question types retain all sixteen bits",
+TEST_CASE("响应问题类型保留完整十六位",
           "[response_validator][mismatch]") {
     auto question = example_question();
     for (const auto type : std::array<std::uint16_t, 6>{0, 1, 28, 0x00ff, 0xff00, 0xffff}) {
@@ -110,7 +113,7 @@ TEST_CASE("Response question types retain all sixteen bits",
     }
 }
 
-TEST_CASE("Response question classes retain all sixteen bits",
+TEST_CASE("响应问题类别保留完整十六位",
           "[response_validator][mismatch]") {
     auto question = example_question();
     for (const auto qclass : std::array<std::uint16_t, 6>{0, 1, 3, 0x00ff, 0xff00, 0xffff}) {
@@ -124,7 +127,7 @@ TEST_CASE("Response question classes retain all sixteen bits",
     }
 }
 
-TEST_CASE("Response mismatches follow the documented priority",
+TEST_CASE("响应不匹配错误遵守约定的优先级",
           "[response_validator][mismatch]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -151,7 +154,7 @@ TEST_CASE("Response mismatches follow the documented priority",
     CHECK(validate_response(response, question, transaction_id).has_value());
 }
 
-TEST_CASE("Response names ignore ASCII letter case", "[response_validator][name]") {
+TEST_CASE("响应名称比较忽略 ASCII 字母大小写", "[response_validator][name]") {
     const auto question = example_question();
     auto response = response_for(question);
     response.questions.front().name = DnsName{{"ExAmPlE", "COM"}};
@@ -159,7 +162,7 @@ TEST_CASE("Response names ignore ASCII letter case", "[response_validator][name]
     CHECK(validate_response(response, question, transaction_id).has_value());
 }
 
-TEST_CASE("Root questions match only root questions", "[response_validator][name]") {
+TEST_CASE("根名问题只与根名问题匹配", "[response_validator][name]") {
     const DnsQuestion root{DnsName{}, 28, 1};
     auto response = response_for(root);
     CHECK(validate_response(response, root, transaction_id).has_value());
@@ -170,7 +173,7 @@ TEST_CASE("Root questions match only root questions", "[response_validator][name
     check_mismatch(response, root, transaction_id, ResponseMismatch::QuestionName);
 }
 
-TEST_CASE("Response names preserve label boundaries", "[response_validator][name]") {
+TEST_CASE("响应名称匹配保留标签边界", "[response_validator][name]") {
     struct Names {
         DnsName requested;
         DnsName received;
@@ -188,7 +191,7 @@ TEST_CASE("Response names preserve label boundaries", "[response_validator][name
     }
 }
 
-TEST_CASE("Response matching preserves raw label octets and folds only ASCII",
+TEST_CASE("响应匹配保留原始标签字节且仅折叠 ASCII 大小写",
           "[response_validator][name]") {
     const std::string label{
         'A', '\0', static_cast<char>(0x1b), '.', '\\',
@@ -207,7 +210,7 @@ TEST_CASE("Response matching preserves raw label octets and folds only ASCII",
     check_mismatch(response, question, transaction_id, ResponseMismatch::QuestionName);
 }
 
-TEST_CASE("Response codes truncation and non-opcode flags do not prevent matching",
+TEST_CASE("响应码截断标志及操作码之外的标志不妨碍匹配",
           "[response_validator][flags]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -223,7 +226,7 @@ TEST_CASE("Response codes truncation and non-opcode flags do not prevent matchin
     }
 }
 
-TEST_CASE("Response matching does not interpret resource record sections",
+TEST_CASE("响应匹配不解释资源记录区段",
           "[response_validator]") {
     const auto question = example_question();
     auto response = response_for(question);
@@ -238,4 +241,4 @@ TEST_CASE("Response matching does not interpret resource record sections",
     CHECK(validate_response(response, question, transaction_id).has_value());
 }
 
-} // namespace
+} // 命名空间

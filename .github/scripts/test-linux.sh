@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-dnslab_distribution=${1:?Usage: test-linux.sh ubuntu|debian|arch}
+dnslab_distribution=${1:?用法：test-linux.sh ubuntu|debian|arch}
 case "$dnslab_distribution" in
     ubuntu|debian|arch) ;;
-    *) echo "Unsupported distribution: $dnslab_distribution" >&2; exit 1 ;;
+    *) echo "不支持此发行版：$dnslab_distribution" >&2; exit 1 ;;
 esac
 dnslab_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$dnslab_root"
@@ -21,8 +21,7 @@ tar -xzf "$dnslab_build/dnslab-linux-x86_64.tar.gz" -C "$dnslab_build"
     sha256sum -c SHA256SUMS
 )
 
-# Fail visibly when IPv6 loopback is unavailable; never turn it into a skip.
-# Docker uses --network host, so this checks the same namespace as the tests.
+# IPv6 回环不可用时明确失败；与测试共用主机网络命名空间，避免掩盖环境问题。
 dnslab_status=0
 if ! python3 - <<'PY' > "$dnslab_logs/ipv6.log" 2>&1
 import socket
@@ -36,11 +35,11 @@ with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as server, \
     payload = b"DNSLab IPv6 loopback"
     destination = server.getsockname()
     if client.sendto(payload, destination) != len(payload):
-        raise RuntimeError("Incomplete IPv6 datagram")
+        raise RuntimeError("IPv6 数据报未完整发送")
     received, sender = server.recvfrom(65535)
     if received != payload or sender[:2] != client.getsockname()[:2]:
-        raise RuntimeError("IPv6 payload or source endpoint mismatch")
-    print(f"IPv6 loopback passed: {sender} -> {destination}")
+        raise RuntimeError("IPv6 数据内容或来源地址不匹配")
+    print(f"IPv6 回环检查通过：{sender} -> {destination}")
 PY
 then
     dnslab_status=1

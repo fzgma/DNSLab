@@ -31,6 +31,7 @@ struct BoundSocket {
     Endpoint endpoint;
 };
 
+/// 绑定指定地址族的 UDP 回环临时端口并返回实际端点。
 BoundSocket bind_loopback(IpFamily family) {
     auto socket = Socket::open(family, SocketTransport::Udp);
     if (!socket) {
@@ -56,6 +57,7 @@ BoundSocket bind_loopback(IpFamily family) {
     return {std::move(*socket), *endpoint};
 }
 
+/// 断言 UDP 操作返回指定错误类别、操作阶段和空系统码。
 template <typename T>
 void check_error(const std::expected<T, NetworkError>& result,
                  NetworkErrorCode code, NetworkOperation operation) {
@@ -65,6 +67,7 @@ void check_error(const std::expected<T, NetworkError>& result,
     CHECK(result.error().system_code == 0);
 }
 
+/// 通过原生接口验证 UDP 套接字未被隐式连接到单一对端。
 void check_unconnected(const Socket& socket) {
     sockaddr_storage peer{};
 #if defined(_WIN32)
@@ -84,6 +87,7 @@ void check_unconnected(const Socket& socket) {
     CHECK(error == not_connected);
 }
 
+/// 验证指定地址族的 UDP 往返保留来源、普通负载和空数据报。
 void check_roundtrip(IpFamily family) {
     auto server = bind_loopback(family);
     auto client = bind_loopback(family);
@@ -111,17 +115,17 @@ void check_roundtrip(IpFamily family) {
     check_unconnected(client.socket);
 }
 
-TEST_CASE("IPv4 UDP uses ephemeral loopback endpoints and preserves empty datagrams",
+TEST_CASE("IPv4 UDP 使用回环临时端点并保留空数据报",
           "[udp][ipv4]") {
     check_roundtrip(IpFamily::V4);
 }
 
-TEST_CASE("IPv6 UDP uses ephemeral loopback endpoints and preserves empty datagrams",
+TEST_CASE("IPv6 UDP 使用回环临时端点并保留空数据报",
           "[udp][ipv6]") {
     check_roundtrip(IpFamily::V6);
 }
 
-TEST_CASE("UDP receiving reports each actual sender without filtering",
+TEST_CASE("UDP 接收报告每个实际来源且不自行过滤",
           "[udp][source]") {
     auto server = bind_loopback(IpFamily::V4);
     auto first = bind_loopback(IpFamily::V4);
@@ -137,7 +141,7 @@ TEST_CASE("UDP receiving reports each actual sender without filtering",
     }
 }
 
-TEST_CASE("UDP receives a large datagram without returning a truncated prefix",
+TEST_CASE("UDP 完整接收大数据报而不返回截断前缀",
           "[udp][size]") {
     auto server = bind_loopback(IpFamily::V4);
     auto client = bind_loopback(IpFamily::V4);
@@ -153,13 +157,14 @@ TEST_CASE("UDP receives a large datagram without returning a truncated prefix",
     CHECK(received->sender == client.endpoint);
 }
 
-TEST_CASE("UDP receive waits for later local data using its original deadline",
+TEST_CASE("UDP 等待后到的本地数据时沿用原截止时间",
           "[udp][wait]") {
     auto server = bind_loopback(IpFamily::V4);
     auto client = bind_loopback(IpFamily::V4);
     const auto deadline = Deadline::after(2s);
     std::optional<NetworkError> worker_error;
     const std::array payload{std::byte{0xab}, std::byte{0xcd}};
+    /// 延迟发送本地数据，以验证接收端等待后到数据。
     std::jthread sender([&] {
         std::this_thread::sleep_for(20ms);
         const auto result = send_datagram(client.socket, server.endpoint, payload, deadline);
@@ -175,7 +180,7 @@ TEST_CASE("UDP receive waits for later local data using its original deadline",
     CHECK(received->sender == client.endpoint);
 }
 
-TEST_CASE("UDP readiness waits honor finite and already expired deadlines",
+TEST_CASE("UDP 就绪等待遵守有限和已过期的截止时间",
           "[udp][deadline]") {
     auto server = bind_loopback(IpFamily::V4);
     const auto deadline = Deadline::after(35ms);
@@ -187,12 +192,12 @@ TEST_CASE("UDP readiness waits honor finite and already expired deadlines",
     check_error(receive_datagram(server.socket, deadline),
                  NetworkErrorCode::TimedOut, NetworkOperation::Receive);
 
-    // The native timeout is clamped before conversion; writability returns immediately.
+    // 转换原生超时值前先限制上界；可写状态应立即返回。
     REQUIRE(wait_socket(server.socket, WaitInterest::Write,
                          Deadline{Deadline::TimePoint::max()}).has_value());
 }
 
-TEST_CASE("An expired UDP send does not transmit a datagram",
+TEST_CASE("UDP 发送预算已过期时不发送数据报",
           "[udp][deadline]") {
     auto server = bind_loopback(IpFamily::V4);
     auto client = bind_loopback(IpFamily::V4);
@@ -206,7 +211,7 @@ TEST_CASE("An expired UDP send does not transmit a datagram",
     CHECK(received.error().system_code == 0);
 }
 
-TEST_CASE("Successive UDP arrivals do not renew the receive budget",
+TEST_CASE("连续 UDP 数据到达不会延长接收预算",
           "[udp][deadline]") {
     auto server = bind_loopback(IpFamily::V4);
     auto client = bind_loopback(IpFamily::V4);
@@ -216,6 +221,7 @@ TEST_CASE("Successive UDP arrivals do not renew the receive budget",
     const auto producer_deadline = Deadline::after(1s, started_at);
     REQUIRE(send_datagram(client.socket, server.endpoint, payload, producer_deadline).has_value());
     std::optional<NetworkError> worker_error;
+    /// 持续发送 UDP 数据，以验证接收截止时间不会重置。
     std::jthread sender([&](std::stop_token stop) {
         while (!stop.stop_requested() && !producer_deadline.expired()) {
             const auto result = send_datagram(client.socket, server.endpoint, payload,
@@ -249,7 +255,7 @@ TEST_CASE("Successive UDP arrivals do not renew the receive budget",
     CHECK(deadline.expires_at() == started_at + 60ms);
 }
 
-TEST_CASE("UDP operations reject invalid sockets interests ports and payload sizes",
+TEST_CASE("UDP 操作拒绝无效套接字、等待方向、端口和负载长度",
           "[udp][invalid]") {
     Socket invalid;
     auto server = bind_loopback(IpFamily::V4);
@@ -275,7 +281,7 @@ TEST_CASE("UDP operations reject invalid sockets interests ports and payload siz
                  NetworkErrorCode::InvalidArgument, NetworkOperation::Send);
 }
 
-TEST_CASE("UDP bind failures retain their native error and operation",
+TEST_CASE("UDP 绑定失败保留原生错误及操作阶段",
           "[udp][error]") {
     auto server = bind_loopback(IpFamily::V4);
     const auto result = bind_socket(server.socket, server.endpoint);
@@ -289,4 +295,4 @@ TEST_CASE("UDP bind failures retain their native error and operation",
                  NetworkOperation::LocalEndpoint);
 }
 
-} // namespace
+} // 匿名命名空间

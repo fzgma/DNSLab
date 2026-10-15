@@ -1,7 +1,7 @@
 {
   "name": "dnslab",
   "version": "0.1.0",
-  "description": "Cross-platform DNS diagnostic CLI with UDP, TCP, DoH and DoT",
+  "description": "支持 UDP、TCP、DoH 与 DoT 的跨平台 DNS 命令行诊断工具",
   "builtin-baseline": "20ceb8adbf0504d4b0d5e4058a32f9d4fc896391",
   "dependencies": [
     "cli11",

@@ -49,6 +49,7 @@ constexpr int closed_handle_error = EBADF;
 static_assert(std::is_same_v<Socket::native_handle_type, int>);
 #endif
 
+/// 立即读取当前平台最近一次套接字操作的错误码。
 int last_socket_error() noexcept {
 #if defined(_WIN32)
     return ::WSAGetLastError();
@@ -57,6 +58,7 @@ int last_socket_error() noexcept {
 #endif
 }
 
+/// 创建指定类型的测试套接字并在失败时记录原始错误。
 Socket open_socket(IpFamily family, SocketTransport transport) {
     auto result = Socket::open(family, transport);
     if (!result) {
@@ -67,6 +69,7 @@ Socket open_socket(IpFamily family, SocketTransport transport) {
     return std::move(*result);
 }
 
+/// 读取并校验原生套接字整数选项。
 int integer_option(Socket::native_handle_type handle, int option) {
     int value{};
     SocketLength length = static_cast<SocketLength>(sizeof(value));
@@ -79,8 +82,9 @@ int integer_option(Socket::native_handle_type handle, int option) {
     return value;
 }
 
-// A socket opened before the close remains alive when this helper is called.
-// No new socket is opened between closing a handle and checking it for invalidity.
+// 调用本辅助函数时，关闭操作前已打开的守护套接字仍然存活。
+// 关闭句柄与验证失效之间不创建新套接字，避免句柄复用造成误判。
+/// 通过原生选项查询确认关闭后的句柄确实失效。
 void check_closed_handle(Socket::native_handle_type handle) {
     int value{};
     SocketLength length = static_cast<SocketLength>(sizeof(value));
@@ -92,6 +96,7 @@ void check_closed_handle(Socket::native_handle_type handle) {
     CHECK(error == closed_handle_error);
 }
 
+/// 检查套接字地址族、传输类型、非阻塞及平台句柄配置。
 void check_family_and_type(IpFamily family, SocketTransport transport) {
     auto socket = open_socket(family, transport);
     REQUIRE(socket.valid());
@@ -138,7 +143,7 @@ void check_family_and_type(IpFamily family, SocketTransport transport) {
 #endif
 }
 
-TEST_CASE("A default socket is invalid and can be closed repeatedly", "[socket]") {
+TEST_CASE("默认套接字无效且可重复关闭", "[socket]") {
     Socket socket;
     const auto invalid = socket.native_handle();
     CHECK_FALSE(socket.valid());
@@ -153,23 +158,23 @@ TEST_CASE("A default socket is invalid and can be closed repeatedly", "[socket]"
     CHECK(socket.native_handle() == invalid);
 }
 
-TEST_CASE("IPv4 UDP sockets have the requested type and configuration", "[socket]") {
+TEST_CASE("IPv4 UDP 套接字具有请求的类型与配置", "[socket]") {
     check_family_and_type(IpFamily::V4, SocketTransport::Udp);
 }
 
-TEST_CASE("IPv4 TCP sockets have the requested type and configuration", "[socket]") {
+TEST_CASE("IPv4 TCP 套接字具有请求的类型与配置", "[socket]") {
     check_family_and_type(IpFamily::V4, SocketTransport::Tcp);
 }
 
-TEST_CASE("IPv6 UDP sockets have the requested type and configuration", "[socket]") {
+TEST_CASE("IPv6 UDP 套接字具有请求的类型与配置", "[socket]") {
     check_family_and_type(IpFamily::V6, SocketTransport::Udp);
 }
 
-TEST_CASE("IPv6 TCP sockets have the requested type and configuration", "[socket]") {
+TEST_CASE("IPv6 TCP 套接字具有请求的类型与配置", "[socket]") {
     check_family_and_type(IpFamily::V6, SocketTransport::Tcp);
 }
 
-TEST_CASE("Closing a socket releases its handle and is idempotent", "[socket]") {
+TEST_CASE("关闭套接字释放句柄且重复关闭无副作用", "[socket]") {
     auto runtime_guard = open_socket(IpFamily::V4, SocketTransport::Udp);
     auto socket = open_socket(IpFamily::V4, SocketTransport::Tcp);
     const auto handle = socket.native_handle();
@@ -182,7 +187,7 @@ TEST_CASE("Closing a socket releases its handle and is idempotent", "[socket]") 
     CHECK(integer_option(runtime_guard.native_handle(), SO_TYPE) == SOCK_DGRAM);
 }
 
-TEST_CASE("Socket destruction releases its handle", "[socket]") {
+TEST_CASE("套接字析构释放句柄", "[socket]") {
     auto runtime_guard = open_socket(IpFamily::V4, SocketTransport::Udp);
     Socket::native_handle_type handle{};
     {
@@ -193,7 +198,7 @@ TEST_CASE("Socket destruction releases its handle", "[socket]") {
     CHECK(integer_option(runtime_guard.native_handle(), SO_TYPE) == SOCK_DGRAM);
 }
 
-TEST_CASE("Moving a socket transfers ownership through moved-from destruction", "[socket]") {
+TEST_CASE("套接字移动转移所有权且源对象析构不影响目标", "[socket]") {
     Socket destination;
     Socket::native_handle_type handle{};
     {
@@ -211,7 +216,7 @@ TEST_CASE("Moving a socket transfers ownership through moved-from destruction", 
     CHECK(integer_option(destination.native_handle(), SO_TYPE) == SOCK_DGRAM);
 }
 
-TEST_CASE("Move assignment closes the old socket before taking the new one", "[socket]") {
+TEST_CASE("移动赋值先关闭旧套接字再接管新套接字", "[socket]") {
     auto destination = open_socket(IpFamily::V4, SocketTransport::Udp);
     auto source = open_socket(IpFamily::V4, SocketTransport::Tcp);
     const auto old_handle = destination.native_handle();
@@ -225,7 +230,7 @@ TEST_CASE("Move assignment closes the old socket before taking the new one", "[s
     CHECK(integer_option(destination.native_handle(), SO_TYPE) == SOCK_STREAM);
 }
 
-TEST_CASE("Assigning an invalid socket releases the previous handle", "[socket]") {
+TEST_CASE("赋入无效套接字释放原有句柄", "[socket]") {
     auto runtime_guard = open_socket(IpFamily::V4, SocketTransport::Udp);
     auto destination = open_socket(IpFamily::V4, SocketTransport::Tcp);
     const auto handle = destination.native_handle();
@@ -238,7 +243,7 @@ TEST_CASE("Assigning an invalid socket releases the previous handle", "[socket]"
     CHECK(integer_option(runtime_guard.native_handle(), SO_TYPE) == SOCK_DGRAM);
 }
 
-TEST_CASE("Self move assignment keeps a socket usable", "[socket]") {
+TEST_CASE("套接字自移动赋值后仍可使用", "[socket]") {
     auto socket = open_socket(IpFamily::V4, SocketTransport::Udp);
     const auto handle = socket.native_handle();
     auto& same_socket = socket;
@@ -249,7 +254,7 @@ TEST_CASE("Self move assignment keeps a socket usable", "[socket]") {
     CHECK(integer_option(socket.native_handle(), SO_TYPE) == SOCK_DGRAM);
 }
 
-TEST_CASE("A new UDP socket does not block while waiting for absent loopback data",
+TEST_CASE("新 UDP 套接字等待不存在的回环数据时不阻塞",
           "[socket][nonblocking]") {
     auto socket = open_socket(IpFamily::V4, SocketTransport::Udp);
     const auto handle = static_cast<NativeSocket>(socket.native_handle());
@@ -276,7 +281,7 @@ TEST_CASE("A new UDP socket does not block while waiting for absent loopback dat
 #endif
 }
 
-TEST_CASE("Invalid socket families return a deterministic creation error", "[socket][error]") {
+TEST_CASE("无效地址族返回确定的套接字创建错误", "[socket][error]") {
     for (const int value : {-1, 2, 99}) {
         CAPTURE(value);
         const auto result = Socket::open(static_cast<IpFamily>(value), SocketTransport::Udp);
@@ -286,7 +291,7 @@ TEST_CASE("Invalid socket families return a deterministic creation error", "[soc
     }
 }
 
-TEST_CASE("Invalid socket transports return a deterministic creation error", "[socket][error]") {
+TEST_CASE("无效传输类型返回确定的套接字创建错误", "[socket][error]") {
     for (const int value : {-1, 2, 99}) {
         CAPTURE(value);
         const auto result = Socket::open(IpFamily::V4, static_cast<SocketTransport>(value));
@@ -296,4 +301,4 @@ TEST_CASE("Invalid socket transports return a deterministic creation error", "[s
     }
 }
 
-} // namespace
+} // 匿名命名空间

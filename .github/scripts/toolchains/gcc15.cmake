@@ -1,4 +1,4 @@
-# Both the project and vcpkg ports use this compiler and the generic x86-64 ISA.
+# 项目与依赖统一使用此编译器及通用 x86-64 指令集。
 set(dnslab_gcc_prefix "/opt/rh/gcc-toolset-15/root/usr")
 set(CMAKE_C_COMPILER "${dnslab_gcc_prefix}/bin/gcc" CACHE FILEPATH "" FORCE)
 set(CMAKE_CXX_COMPILER "${dnslab_gcc_prefix}/bin/g++" CACHE FILEPATH "" FORCE)

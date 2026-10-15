@@ -21,31 +21,31 @@ DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与�
 
 ### Windows
 
-使用 Ninja 构建后：
+使用 Windows GCC 构建预设后：
 
 ```powershell
 # 查看帮助
-.\build\dnslab.exe --help
+.\build-mingw-debug\dnslab.exe --help
 
 # 查看版本
-.\build\dnslab.exe --version
+.\build-mingw-debug\dnslab.exe --version
 
 # 普通查询，以及加密查询
-.\build\dnslab.exe query example.com --server 1.1.1.1
-.\build\dnslab.exe query example.com --doh https://cloudflare-dns.com/dns-query
-.\build\dnslab.exe query example.com --dot dns.google --type AAAA
+.\build-mingw-debug\dnslab.exe query example.com --server 1.1.1.1
+.\build-mingw-debug\dnslab.exe query example.com --doh https://cloudflare-dns.com/dns-query
+.\build-mingw-debug\dnslab.exe query example.com --dot dns.google --type AAAA
 ```
 
-如果使用 Visual Studio，按构建说明中的路径运行 `build-msvc/Debug/dnslab.exe`。
+如果使用 MSVC 预设，运行 `build-msvc-debug/dnslab.exe`。VS Code 的工具链与独立构建目录配置见[构建说明](docs/build.md#vs-code)。
 
 ### Linux
 
 ```bash
-./build/dnslab --help
-./build/dnslab --version
-./build/dnslab query example.com --server 1.1.1.1 --transport tcp
-./build/dnslab query example.com --doh https://cloudflare-dns.com/dns-query
-./build/dnslab query example.com --dot dns.google
+./build-linux-debug/dnslab --help
+./build-linux-debug/dnslab --version
+./build-linux-debug/dnslab query example.com --server 1.1.1.1 --transport tcp
+./build-linux-debug/dnslab query example.com --doh https://cloudflare-dns.com/dns-query
+./build-linux-debug/dnslab query example.com --dot dns.google
 ```
 
 版本输出：
@@ -76,17 +76,17 @@ DNSLab 0.1.0
 
 ## 4. 从源码构建
 
-要求 **CMake 3.25+、支持 C++23 和 `std::expected` 的编译器与标准库、CLI11、Catch2 v3、libcurl，以及用于测试的 Python 3.10+**。建议使用仓库固定的 vcpkg 清单准备依赖。
+要求 **CMake 3.25+、支持 C++23 的 `std::expected` 与 `std::print` 的编译器与标准库、CLI11、Catch2 v3、libcurl，以及用于测试的 Python 3.10+**。建议使用仓库固定的 vcpkg 清单准备依赖。
 
-若上述依赖已作为 CMake 包安装，可使用 Ninja 构建：
+按构建说明准备 vcpkg 后，Windows GCC 可直接使用预设：
 
 ```powershell
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+cmake --preset mingw-debug
+cmake --build --preset mingw-debug --parallel
+ctest --preset mingw-debug
 ```
 
-依赖安装和 Windows/Linux 命令见[构建与测试](docs/build.md)，实际验证环境见[开发进度](docs/todo.md#验证状态)。所有测试离线运行，不访问公共 DNS。
+Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 配置见[构建与测试](docs/build.md)，实际验证环境见[开发进度](docs/todo.md#验证状态)。所有测试离线运行，不访问公共 DNS。
 
 [GitHub Actions](https://github.com/fzgma/DNSLab/actions/workflows/build-test.yml) 覆盖 Windows、Ubuntu、Arch、Debian，分别运行冒烟、单元和集成测试。Linux 编译一次后复用同一份产物，环境与版本策略见[持续集成](docs/build.md#持续集成)。
 
@@ -130,6 +130,7 @@ ctest --test-dir build --output-on-failure
 - [开发进度与待办](docs/todo.md)
 - [命令行接口](docs/cli.md)
 - [输入校验](docs/validation.md)
+- [代码风格](docs/style.md)
 - [协作与提交约定](AGENTS.md)
 
 ## 8. 开源协议

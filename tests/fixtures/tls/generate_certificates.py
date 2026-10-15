@@ -1,7 +1,6 @@
-"""Regenerate PUBLIC TEST KEYS and certificates; never use them outside tests.
+"""重新生成公开测试私钥与证书，仅可用于离线测试。
 
-Requires the optional cryptography package only when regenerating fixtures.
-Running the integration tests requires only the Python standard library.
+只有重新生成夹具时需要可选的 cryptography 包，运行集成测试仅需 Python 标准库。
 """
 
 from datetime import datetime, timezone
@@ -21,16 +20,19 @@ CRL_URL = "http://127.0.0.1:18453/dnslab-test-root.crl"
 
 
 def write_key(name, key):
+    """将仅供测试的私钥写为未加密的 PEM 文件。"""
     (ROOT / name).write_bytes(key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption()))
 
 
 def write_certificate(name, certificate):
+    """将测试证书写为可由客户端显式加载的 PEM 文件。"""
     (ROOT / name).write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
 
 
 def generate():
+    """生成测试 CA、签名撤销列表及正常与异常身份的服务器证书。"""
     authority_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     authority_name = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "DNSLab PUBLIC TEST ONLY Root CA")])
@@ -44,6 +46,7 @@ def generate():
             authority_key.public_key()), critical=False)
         .sign(authority_key, hashes.SHA256()))
     write_certificate("ca.pem", authority)
+    # 本地签名撤销列表使 Schannel 保留正常校验，无需联网或改动系统信任库。
     crl = (x509.CertificateRevocationListBuilder().issuer_name(authority_name)
         .last_update(START).next_update(END)
         .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(

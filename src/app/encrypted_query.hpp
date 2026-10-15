@@ -16,12 +16,12 @@ struct EncryptedQueryResult {
     std::vector<QueryAttempt> attempts{};
 };
 
-// DoH defaults to ID zero; DoT generates an ID unless one is supplied.
-// One exchange is performed. Invalid responses fail without plaintext fallback.
+/// 在同一预算内执行一次严格验证证书的加密查询，响应无效时直接失败且不回退明文。
+// DoH 默认事务 ID 为零；DoT 在调用者未指定时生成事务 ID。
 [[nodiscard]] std::expected<EncryptedQueryResult, QueryError>
 query_encrypted(const dns::DnsQuestion& question, const net::EncryptedEndpoint& server,
                 std::chrono::milliseconds budget = std::chrono::milliseconds{1500},
                 const net::TlsOptions& tls = {},
                 std::optional<std::uint16_t> transaction_id = std::nullopt);
 
-} // namespace dnslab::app
+} // 命名空间 dnslab::app

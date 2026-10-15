@@ -6,4 +6,4 @@ namespace dnslab {
 
 inline constexpr std::string_view version = "@PROJECT_VERSION@";
 
-} // namespace dnslab
+} // 命名空间 dnslab

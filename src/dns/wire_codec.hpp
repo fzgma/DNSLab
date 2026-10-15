@@ -10,14 +10,14 @@
 
 namespace dnslab::dns {
 
-// Parses one complete DNS packet; compression offsets use the full packet.
+/// 解析一份完整 DNS 报文，压缩指针始终以整个报文为基准。
 [[nodiscard]] std::expected<DnsMessage, DnsParseError>
 parse_message(std::span<const std::byte> packet);
 
-// Encodes one IN A/AAAA question without name compression. Validation checks
-// the name before the query type and class; the caller supplies the transaction ID.
+/// 使用调用方提供的事务 ID 编码一个未压缩的 IN A 或 AAAA 查询。
+// 先检查名称，再检查查询类型和类别，以保持错误优先级。
 [[nodiscard]] std::expected<Packet, DnsEncodeError>
 encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
              bool recursion_desired = true);
 
-} // namespace dnslab::dns
+} // 命名空间 dnslab::dns
