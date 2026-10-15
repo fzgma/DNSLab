@@ -6,14 +6,14 @@
 
 - CMake 3.25+，以及支持 C++23 和 `std::expected` 的编译器与标准库。
 - Windows 可使用 MSYS2 UCRT64 GCC 或 MSVC；Linux 使用合适版本的 GCC / libstdc++。
-- Git、CLI11 和 Catch2 v3。首次下载依赖需要网络，已经构建的测试离线运行。
+- Git、CLI11、Catch2 v3、带 TLS/HTTP2/c-ares 异步解析支持的 libcurl，以及用于测试的 Python 3.10+。首次下载依赖需要网络，已经构建的测试离线运行。
 - 使用 Ninja 时，确保 Ninja 与编译器可从当前终端找到。MSVC 需安装 C++ 桌面开发工作负载及 Windows SDK。
 
 项目不依赖 IDE 私有配置。所有命令从仓库根目录执行；同一构建目录不能混用不同生成器或编译器。
 
 ## 准备依赖
 
-`vcpkg.json` 固定基线为 `20ceb8adbf0504d4b0d5e4058a32f9d4fc896391`，对应 CLI11 2.7.2 和 Catch2 3.16.0。以下步骤将 vcpkg 放入已忽略的目录，并固定其源码版本。
+`vcpkg.json` 固定基线为 `20ceb8adbf0504d4b0d5e4058a32f9d4fc896391`，对应 CLI11 2.7.2、Catch2 3.16.0 和 curl 8.23.0。curl 启用 `ssl`、`http2`、`c-ares`，Windows 使用 Schannel，Linux 使用 OpenSSL。以下步骤将 vcpkg 放入已忽略的目录，并固定其源码版本。
 
 Windows PowerShell：
 
@@ -33,7 +33,7 @@ export VCPKG_ROOT="$PWD/build-deps/vcpkg"
 "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
 ```
 
-Linux 还需准备 Make、curl、zip、unzip 和 tar。已有兼容 vcpkg 时，可跳过克隆与引导，只设置 `VCPKG_ROOT`；不必切换共享安装的版本。首次配置将根据 manifest 安装依赖。
+Linux 还需准备 Make、curl、zip、unzip、tar、Perl、pkg-config 和 ca-certificates。已有兼容 vcpkg 时，可跳过克隆与引导，只设置 `VCPKG_ROOT`；不必切换共享安装的版本。首次配置将根据 manifest 安装依赖。
 
 ## Windows
 
@@ -76,7 +76,7 @@ ctest --test-dir build --output-on-failure
 
 ## 已安装依赖
 
-如果 CLI11 与 Catch2 v3 已提供匹配工具链的 CMake config 包，可省略 vcpkg toolchain。例如使用 Ninja：
+如果 CLI11、Catch2 v3 与 libcurl 已提供匹配工具链的 CMake config 包，可省略 vcpkg toolchain。libcurl 需要启用 TLS、HTTP/2 和 c-ares 异步解析，仅有线程解析后端也会报告能力不足。例如使用 Ninja：
 
 ```text
 cmake -S . -B build-system -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -84,13 +84,15 @@ cmake --build build-system --parallel
 ctest --test-dir build-system --output-on-failure
 ```
 
-依赖位于非默认位置时传入 `-DCMAKE_PREFIX_PATH=<依赖目录>`，或分别设置 `CLI11_DIR` 和 `Catch2_DIR`。不要复用另一种依赖配置的构建缓存。
+依赖位于非默认位置时传入 `-DCMAKE_PREFIX_PATH=<依赖目录>`，或分别设置 `CLI11_DIR`、`Catch2_DIR` 和 `CURL_DIR`。不要复用另一种依赖配置的构建缓存。
 
 ## 配置与测试
 
 Ninja 等单配置生成器通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`。运行路径随生成器和配置变化：Ninja 为 `build/dnslab.exe`（Windows）或 `build/dnslab`（Linux），上述 MSVC 示例为 `build-msvc/Debug/dnslab.exe`。
 
-测试覆盖输入与报文处理、套接字生命周期、查询预算、UDP/TCP 收发、响应匹配和命令行基础行为，并使用本地模拟服务器验证查询与自动回退。单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒；预算单元测试使用固定时刻，传输与查询测试只使用本机资源、回环地址和临时端口，不访问公共 DNS。测试线程由 CMake 的 `Threads::Threads` 目标配置，Windows 自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+测试覆盖输入与报文处理、套接字生命周期、查询预算、UDP/TCP 收发、响应匹配和命令行行为，并使用本地模拟服务器验证查询、自动回退、DoH 与 DoT。单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒；预算单元测试使用固定时刻，集成测试不访问公共 DNS。测试线程由 CMake 的 `Threads::Threads` 目标配置，Windows 自动链接系统网络库。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+
+加密集成测试使用 Python 标准库和仓库中的测试证书，HTTPS/TLS 监听临时端口；撤销列表服务使用 `127.0.0.1:18453`，CTest 资源锁避免并行争用。端口被其他程序占用时测试明确失败。夹具不会安装证书到系统信任库，也不会关闭生产验证，详见 [TLS 测试夹具](../tests/fixtures/tls/README.md)。
 
 CTest 使用三个互不重叠的标签：`smoke` 检查程序调用，`unit` 检查纯内存逻辑，`integration` 检查系统套接字、UDP/TCP 收发和本地模拟服务器。可以分别运行；多配置生成器额外传入 `-C Release` 或对应配置：
 

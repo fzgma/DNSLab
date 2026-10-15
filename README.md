@@ -2,20 +2,18 @@
 
 > 面向 Windows 和 Linux 的 C++23 DNS 命令行工具项目。
 
-DNSLab 计划提供域名查询和 DNS 服务器响应比较，帮助学习 DNS 协议和排查解析问题。
+DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与耗时，帮助学习 DNS 协议和排查解析问题。
 
-当前版本为 **0.1.0**，处于基础开发阶段：程序可以查看帮助和版本信息，**尚不能执行 DNS 查询**。当前请从源码构建后运行。开发进度见 [TODO](docs/todo.md)。
+当前版本为 **0.1.0 开发版**，已支持单服务器 **UDP、TCP、DoH 和 DoT 查询**。当前请从源码构建后运行；服务器比较与 JSON 报告仍待实现。开发进度见 [TODO](docs/todo.md)。
 
 ## 1. 功能
 
-- **查看帮助**：显示当前支持的选项；不带参数运行也会显示帮助。
-- **查看版本**：显示程序版本，当前输出为 `DNSLab 0.1.0`。
-- **基础字节工具**：核心库提供带边界检查的 16 位、32 位大端整数读取与追加写入。
-- **域名基础处理**：核心库支持输入校验、名称编码、普通及压缩名称解码、大小写无关比较和特殊字符转义显示。
-- **DNS 报文处理**：核心库可生成 A/AAAA 查询报文，解析完整消息中的问题和各组记录，识别 A/AAAA/CNAME，并保留不支持的记录数据。
-- **网络基础**：核心库支持服务器地址校验与重复检测、UDP/TCP 套接字资源管理、超时值校验和剩余预算计算，尚未接入查询命令。
-- **单服务器 UDP 用例**：核心库可发送查询并接收响应，核对来源、事务信息和问题；忽略无关数据时仍遵守同一个超时预算。查询命令尚未接入。
-- **TCP 与自动回退**：核心库支持直接 TCP 查询及有效 UDP 截断响应后的 TCP 回退，共享总预算并保留每次尝试；查询命令尚未接入。
+- **域名查询**：查询 A、AAAA，展示响应码、TTL、A/AAAA/CNAME 和各组记录。
+- **UDP 与 TCP**：支持显式选择传输，默认在有效 UDP 截断响应后回退 TCP。
+- **DoH 与 DoT**：直接指定 HTTPS 地址或 TLS 服务器，严格校验证书和服务器身份，可指定私有 CA。
+- **有限等待**：整个查询共用一个超时预算，回退、握手和部分收发不重置计时。
+- **过程与错误**：显示实际传输和尝试记录，区分参数错误、查询失败与 DNS 响应码。
+- **帮助与版本**：支持顶层和查询帮助，`--version` / `-V` 显示版本。
 
 ## 2. 快速开始
 
@@ -31,6 +29,11 @@ DNSLab 计划提供域名查询和 DNS 服务器响应比较，帮助学习 DNS 
 
 # 查看版本
 .\build\dnslab.exe --version
+
+# 普通查询，以及加密查询
+.\build\dnslab.exe query example.com --server 1.1.1.1
+.\build\dnslab.exe query example.com --doh https://cloudflare-dns.com/dns-query
+.\build\dnslab.exe query example.com --dot dns.google --type AAAA
 ```
 
 如果使用 Visual Studio，按构建说明中的路径运行 `build-msvc/Debug/dnslab.exe`。
@@ -40,6 +43,9 @@ DNSLab 计划提供域名查询和 DNS 服务器响应比较，帮助学习 DNS 
 ```bash
 ./build/dnslab --help
 ./build/dnslab --version
+./build/dnslab query example.com --server 1.1.1.1 --transport tcp
+./build/dnslab query example.com --doh https://cloudflare-dns.com/dns-query
+./build/dnslab query example.com --dot dns.google
 ```
 
 版本输出：
@@ -52,19 +58,27 @@ DNSLab 0.1.0
 
 下表仅列出当前已经实现的用法：
 
-| 选项 | 简写 | 用途 |
+| 命令或选项 | 简写 | 用途 |
 | --- | --- | --- |
 | `--help` | `-h` | 显示帮助并退出 |
-| `--version` | — | 显示版本并退出 |
+| `--version` | `-V` | 显示版本并退出 |
 | 不带参数 | — | 显示帮助 |
+| `query <name>` | — | 查询一个域名或根名称 |
+| `--server <endpoint>` | `-s` | 指定普通 DNS 的 IP 端点 |
+| `--doh <HTTPS URL>` | — | 指定 DoH 地址 |
+| `--dot <host[:port]>` | — | 指定 DoT 服务器 |
+| `--type A\|AAAA` | `-t` | 查询记录类型 |
+| `--transport auto\|udp\|tcp` | `-T` | 普通 DNS 的传输方式 |
+| `--timeout-ms <n>` | — | 查询总预算 |
+| `--ca-file <path>` | — | 加密查询使用指定 CA 文件 |
 
-当前没有可用的子命令。计划中的 `query`、`compare` 及其选项见[命令行接口](docs/cli.md)，该设计中的待实现功能暂不可运行，`-V` 也尚未提供。名称和服务器地址的输入边界见[输入校验](docs/validation.md)。
+`--server`、`--doh`、`--dot` 三者选一。默认值、组合限制和退出码见[命令行接口](docs/cli.md)，名称与服务器输入规则见[输入校验](docs/validation.md)。`compare` 与报告选项尚未提供。
 
 ## 4. 从源码构建
 
-要求 **CMake 3.25+、支持 C++23 和 `std::expected` 的编译器与标准库、CLI11 和 Catch2 v3**。
+要求 **CMake 3.25+、支持 C++23 和 `std::expected` 的编译器与标准库、CLI11、Catch2 v3、libcurl，以及用于测试的 Python 3.10+**。建议使用仓库固定的 vcpkg 清单准备依赖。
 
-若 CLI11 和 Catch2 已作为 CMake 包安装，可使用 Ninja 构建：
+若上述依赖已作为 CMake 包安装，可使用 Ninja 构建：
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -82,13 +96,15 @@ ctest --test-dir build --output-on-failure
 .
 ├── src/
 │   ├── main.cpp        # 程序入口与命令行选项
+│   ├── cli/            # 终端结果与错误展示
 │   ├── dns/            # 基础类型、字节工具、域名与报文处理
-│   ├── net/            # 端点校验、套接字、查询预算与 UDP/TCP 收发
+│   ├── net/            # 端点、查询预算与普通及加密传输
 │   └── app/            # 响应匹配、单服务器查询与自动回退
 ├── tests/
 │   ├── unit/           # 报文处理与网络基础测试
 │   ├── integration/    # 本地模拟服务器查询测试
 │   ├── support/        # 本地测试服务器辅助代码
+│   ├── fixtures/       # 离线 TLS 测试证书
 │   ├── runtime/        # 直接测试已有产物的入口
 │   └── cli_smoke.cmake # 命令行基础行为测试
 ├── cmake/              # 版本信息与共享测试注册
@@ -100,9 +116,10 @@ ctest --test-dir build --output-on-failure
 
 ## 6. 限制
 
-- 尚未接入查询命令，服务器比较和 JSON 报告也仍待实现。
-- 当前程序不会发送网络请求，不能用来检查真实域名或 DNS 服务器。
-- Windows 的 MSYS2 UCRT64 GCC 构建已验证；Actions 已验证 Windows MSVC 及 Ubuntu、Debian、Arch，具体环境与本机 IPv6 差异见[验证状态](docs/todo.md#验证状态)。
+- 服务器比较和 JSON 报告仍待实现；暂不支持其他查询类型、DNSSEC 验证和 IDN 自动转换。
+- DoH 使用 POST；DoT 不协商自定义 `dot` ALPN。加密连接失败不回退明文，也不使用代理环境变量。
+- 查询会发送给指定服务器；加密服务器名称的初次解析可能使用本机配置的普通 DNS。
+- 本分支已在 Windows MSYS2 UCRT64 验证新增查询功能；Windows MSVC 及 Ubuntu、Debian、Arch 的 Actions 记录来自上一阶段普通 DNS 实现。本分支尚未推送，具体结果与本机 IPv6 差异见[验证状态](docs/todo.md#验证状态)。
 
 ## 7. 文档
 

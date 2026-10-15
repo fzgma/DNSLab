@@ -10,7 +10,7 @@
 | [cli.md](cli.md) | 命令、选项、默认值、输出行为和退出码 |
 | [validation.md](validation.md) | 查询名称、服务器地址与超时输入的校验边界 |
 | [wire-codec.md](wire-codec.md) | 名称和 DNS 报文的编码、解析与错误约定 |
-| [network.md](network.md) | 端点模型、套接字所有权、网络错误、查询预算与 UDP/TCP 收发 |
+| [network.md](network.md) | 端点模型、套接字所有权、网络错误、查询预算与 UDP/TCP/DoH/DoT 收发 |
 | [build.md](build.md) | 准备依赖、本地构建、测试分类与跨平台持续集成 |
 | [todo.md](todo.md) | 已完成工作、下一步与验收记录 |
 

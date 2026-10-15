@@ -1,6 +1,6 @@
 # 架构
 
-本文说明模块职责、依赖方向和一次查询的数据流。产品目标见 [prd.md](prd.md)，首版范围见 [mvp.md](mvp.md)，实际完成情况见 [todo.md](todo.md)。当前已实现单服务器 UDP、TCP 与自动回退用例；完整命令、比较和报告仍为后续设计。
+本文说明模块职责、依赖方向和一次查询的数据流。产品目标见 [prd.md](prd.md)，首版范围见 [mvp.md](mvp.md)，实际完成情况见 [todo.md](todo.md)。当前已接入单服务器查询命令及 UDP、TCP、自动回退、DoH 和 DoT；比较和文件报告仍为后续设计。
 
 ## 模块与依赖
 
@@ -22,7 +22,7 @@ flowchart TD
 | 查询结果 | 保存服务器、尝试过程、有效响应及失败原因 | 不触发新的请求 |
 | 报告 | 根据同一份结果生成终端输出和 JSON | 不重新查询、不改变查询结论 |
 
-当前代码包含程序入口、`src/dns/` 的报文处理、`src/net/` 的端点、资源、预算与 UDP/TCP 收发，以及 `src/app/` 的响应匹配和单服务器查询。命令与报告接入时再创建对应目录，无需提前创建空目录或通用框架。
+当前代码包含程序入口与 `src/cli/` 的终端展示、`src/dns/` 的报文处理、`src/net/` 的端点、资源、预算与各传输，以及 `src/app/` 的响应匹配和单服务器查询。文件报告接入时再创建相应模块。
 
 ## 单服务器流程
 
@@ -79,7 +79,7 @@ flowchart TD
 | `QueryError` | 错误分类与详情、总耗时、忽略消息数和已经发生的尝试 |
 | `QueryAttempt` | 本次传输、本次耗时、有效响应或失败原因，以及本次忽略消息数 |
 
-`QueryTransport` 只表示实际使用的 `Udp` 或 `Tcp`。每次尝试通过 `outcome` 保存响应或 `QueryFailure`，无论整体成功还是失败都能读取历史。回退失败时，第一次尝试仍保留有效 UDP TC 响应，第二次保存 TCP 失败；整体返回失败，不能把之前的截断响应当作最终成功结果。
+`QueryTransport` 表示实际使用的 `Udp`、`Tcp`、`Doh` 或 `Dot`。每次尝试通过 `outcome` 保存响应或 `QueryFailure`，无论整体成功还是失败都能读取历史。回退失败时，第一次尝试仍保留有效 UDP TC 响应，第二次保存 TCP 失败；整体返回失败，不能把之前的截断响应当作最终成功结果。
 
 总耗时包含报文准备，各次尝试耗时从进入网络阶段开始计算。进入 TCP 尝试时如果预算已到期，记录该次超时但不连接；尝试记录本身不表示查询已经发出。
 
@@ -87,9 +87,17 @@ TCP 每次读取一个完整帧，再复用 DNS 解析与响应匹配。合法�
 
 `QueryErrorCode` 沿用 UDP 的错误含义，并增加发包前拒绝非法模式的 `InvalidMode`。非法预算、端口或问题同样在网络请求前失败；错误不改变 DNS RCODE 的含义。
 
+### 加密查询用例
+
+`src/app/encrypted_query.hpp` 的 `query_encrypted` 复用编码器、解析器和响应匹配，返回 `EncryptedQueryResult` 或共用的 `QueryError`。加密目标使用 `EncryptedEndpoint` 保存协议和规范地址，不改变普通查询的 IP 端点模型。结果仍保留问题、事务 ID、完整响应、耗时与尝试；错误详情可携带 `EncryptedError`。
+
+DoH 默认事务 ID 为零，DoT 默认生成事务 ID，调用方可显式指定。单次加密查询只交换一个请求与响应，畸形或不匹配响应直接失败，不重试、不改用其他传输。DNS 的非零 RCODE 和 TC 标志仍作为响应信息保留。
+
+`src/net/encrypted_transport.hpp` 管理 HTTPS/TLS 连接及消息边界，使用 libcurl 完成连接和证书验证，自有 DNS 编解码保持独立。DoH 发送 POST；DoT 在 TLS 连接上收发长度帧，不发送 HTTP 请求。网络接口和限制见 [network.md](network.md)。
+
 ## 时间与传输
 
-每台服务器整个查询共用一个基于 `std::chrono::steady_clock` 的截止时间。UDP 收发、TCP 连接和收发、截断回退均使用剩余预算；部分收发和收到无关数据不能重置计时。具体选项范围由 [cli.md](cli.md) 维护。
+每台服务器整个查询共用一个基于 `std::chrono::steady_clock` 的截止时间。UDP 收发、TCP 连接和收发、截断回退，以及加密服务器解析、TLS 握手和收发均使用剩余预算；部分收发和收到无关数据不能重置计时。具体选项范围由 [cli.md](cli.md) 维护。
 
 首版采用同步 I/O 和薄的平台适配层。Windows 正确管理 Winsock 生命周期，Linux 正确管理文件描述符；套接字通过 RAII 释放。所有可能阻塞的操作受截止时间控制。
 
@@ -116,14 +124,15 @@ TCP 消息带两字节长度前缀。实现必须完成部分发送、前缀读�
 
 `NXDOMAIN`、`SERVFAIL`、`REFUSED` 均可能出现在传输成功的结果中。空 Answer 不等于域名不存在；不同答案或 TTL 不同也不直接等于错误。
 
-核心函数通过 `std::expected` 返回可恢复错误；解析错误使用稳定枚举和报文偏移，不在每个错误对象中生成字符串。网络错误独立保存阶段与系统错误信息，不能用 DNS 状态码代替。中文说明在命令行或报告边界生成，退出码由 [cli.md](cli.md#输出与退出码) 统一定义。
+核心函数通过 `std::expected` 返回可恢复错误；解析错误使用稳定枚举和报文偏移，不在每个错误对象中生成字符串。网络错误独立保存阶段与系统错误信息，不能用 DNS 状态码代替。用户提示在命令行或报告边界生成，退出码由 [cli.md](cli.md#输出与退出码) 统一定义。
 
 ## 构建与依赖
 
 - 使用 C++23，要求 `std::expected` 和 `std::span`；关闭编译器语言扩展。
 - CMake 构建 `dnslab_core`、`dnslab`、`dnslab_tests` 和 `dnslab_integration_tests`；CTest 按 `smoke`、`unit`、`integration` 标签执行。
 - Linux 持续集成只编译一次，产物交给 Ubuntu、Debian、Arch 分别运行；`tests/runtime` 只注册已有产物的测试，不查找编译器或重新编译。环境和执行入口见[构建说明](build.md#持续集成)。
-- 已使用 CLI11 和 Catch2；JSON 报告开始实现时才引入相应依赖。
+- 使用 CLI11、Catch2 和带 TLS、HTTP/2、c-ares 异步解析支持的 libcurl；JSON 报告开始实现时才引入相应依赖。
+- Windows 的 libcurl 使用 Schannel，Linux 使用 OpenSSL；系统信任与指定 CA 均不关闭身份检查。TLS 集成测试由 Python 标准库提供本地服务器，不修改系统信任库。
 - vcpkg 固定实际验证的基线，具体步骤见 [build.md](build.md)。
 - 自行实现 DNS 报文处理，不引入替代核心解析器的 DNS 客户端库。
 - 首版不建立协程、事件循环或面向未来传输的插件系统。

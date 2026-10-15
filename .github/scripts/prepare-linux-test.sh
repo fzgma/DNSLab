@@ -7,11 +7,11 @@ case "$ID" in
     ubuntu|debian)
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            cmake python3 tar gzip coreutils
+            cmake python3 tar gzip coreutils ca-certificates
         rm -rf /var/lib/apt/lists/*
         ;;
     arch)
-        pacman -Syu --noconfirm --needed cmake python tar gzip coreutils
+        pacman -Syu --noconfirm --needed cmake python tar gzip coreutils ca-certificates
         pacman -Scc --noconfirm
         ;;
     *)

@@ -4,6 +4,7 @@
 #include "dns/errors.hpp"
 #include "dns/types.hpp"
 #include "net/endpoint.hpp"
+#include "net/encrypted_transport.hpp"
 #include "net/errors.hpp"
 
 #include <chrono>
@@ -17,7 +18,7 @@
 namespace dnslab::app {
 
 enum class TransportMode { Auto, Udp, Tcp };
-enum class QueryTransport { Udp, Tcp };
+enum class QueryTransport { Udp, Tcp, Doh, Dot };
 
 enum class QueryErrorCode {
     InvalidMode,
@@ -32,7 +33,7 @@ enum class QueryErrorCode {
 
 using QueryErrorDetail = std::variant<std::monostate, dns::DnsEncodeError,
                                      net::NetworkError, dns::DnsParseError,
-                                     ResponseMismatch>;
+                                     ResponseMismatch, net::EncryptedError>;
 
 struct QueryFailure {
     QueryErrorCode code;

@@ -3,6 +3,7 @@
 #include "app/query.hpp"
 
 #include <utility>
+#include <type_traits>
 
 namespace dnslab::app {
 namespace {
@@ -39,8 +40,16 @@ query_udp(const dns::DnsQuestion& question, const net::Endpoint& server,
     auto result = query_server(question, server, TransportMode::Udp, budget, transaction_id);
     if (!result) {
         const auto& error = result.error();
+        const auto detail = std::visit([](const auto& value) -> UdpQueryErrorDetail {
+            if constexpr (std::is_same_v<std::decay_t<decltype(value)>, net::EncryptedError>) {
+                // Explicit UDP never enters an encrypted transport.
+                std::unreachable();
+            } else {
+                return value;
+            }
+        }, error.detail);
         return std::unexpected(UdpQueryError{
-            udp_error_code(error.code), error.detail, error.ignored_messages});
+            udp_error_code(error.code), detail, error.ignored_messages});
     }
     return UdpQueryResult{
         std::move(result->server), std::move(result->question), result->transaction_id,

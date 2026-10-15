@@ -24,6 +24,7 @@ if(NOT DNSLAB_HAS_STD_EXPECTED)
 endif()
 
 find_package(CLI11 CONFIG REQUIRED)
+find_package(CURL CONFIG REQUIRED)
 
 add_library(dnslab_core STATIC
     src/dns/byte_utils.cpp
@@ -35,17 +36,20 @@ add_library(dnslab_core STATIC
     src/net/deadline.cpp
     src/net/udp.cpp
     src/net/tcp.cpp
+    src/net/encrypted_transport.cpp
     src/app/response_validator.cpp
     src/app/query.cpp
-    src/app/udp_query.cpp)
+    src/app/udp_query.cpp
+    src/app/encrypted_query.cpp)
 target_include_directories(dnslab_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_compile_features(dnslab_core PUBLIC cxx_std_23)
+target_link_libraries(dnslab_core PRIVATE CURL::libcurl)
 if(WIN32)
     target_link_libraries(dnslab_core PUBLIC ws2_32)
 endif()
 
 configure_file(cmake/version.hpp.in generated/dnslab/version.hpp @ONLY)
-add_executable(dnslab src/main.cpp)
+add_executable(dnslab src/main.cpp src/cli/output.cpp)
 target_include_directories(dnslab PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_link_libraries(dnslab PRIVATE dnslab_core CLI11::CLI11)
 
@@ -71,6 +75,7 @@ if(BUILD_TESTING)
         tests/unit/query_encoder_tests.cpp
         tests/unit/message_parser_tests.cpp
         tests/unit/endpoint_tests.cpp
+        tests/unit/encrypted_endpoint_tests.cpp
         tests/unit/deadline_tests.cpp
         tests/unit/response_validator_tests.cpp)
     target_link_libraries(dnslab_tests PRIVATE dnslab_core Catch2::Catch2WithMain)

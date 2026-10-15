@@ -111,6 +111,19 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 长度前缀不计入消息长度，采用 [RFC 1035 4.2.2](https://www.rfc-editor.org/rfc/rfc1035.html#section-4.2.2) 的两字节网络字节序。本项目消息必须至少容纳 12 字节 DNS Header，最多 65535 字节；收发都拒绝其他长度。接收先验证长度，再分配正文缓冲区。前缀或正文到一半关闭、超时，均不会返回部分消息；长度有效并不表示 DNS 内容有效，后续语义校验仍归应用层负责。
 
+## DoH 与 DoT
+
+`src/net/encrypted_transport.hpp` 提供加密目标解析、TLS 配置预检与 `exchange_encrypted(endpoint, query, deadline, tls)`。`EncryptedEndpoint` 包含传输方式与规范化地址；`TlsOptions` 可指定 CA 文件，空值使用系统信任。地址规则集中在 [validation.md](validation.md#加密服务器地址)。
+
+libcurl 负责 TLS 和 HTTPS，依赖启用 HTTP/2 与异步名称解析。句柄及连接仅属于一次调用，不复用到其他目标；显式禁用代理、重定向和明文降级。检查证书链、有效期和服务器身份，TLS 最低为 1.2。Windows 默认使用系统证书库，Linux 在运行环境查找 CA 文件，避免把构建容器的路径当作发行版通用路径；显式 CA 文件由调用者指定。
+
+- DoH 使用 [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html) 的 POST 形式，请求头与正文类型为 `application/dns-message`，正文直接承载 DNS 消息。仅接受 HTTP 200 和正确的媒体类型，累积正文最多 65535 字节，少于 12 字节也失败；不接受 HTML 或重定向页面作为 DNS。
+- DoT 使用 [RFC 7858](https://www.rfc-editor.org/rfc/rfc7858.html) 的 TLS 长度帧。通过 [libcurl connect-only](https://curl.se/libcurl/c/CURLOPT_CONNECT_ONLY.html) 建立 TLS 后，用其加密读写接口处理部分收发；禁用 HTTP ALPN，不发送 HTTP 请求，也不协商自定义 `dot` ALPN。接收前缀后先校验 12–65535 字节范围，再读取恰好一个消息。
+
+连接与 HTTPS 交换使用剩余预算；DoT 在握手后继续使用原 `Deadline`。收发先尝试库内缓存，只有需要等待时才等待对应套接字，避免漏掉 TLS 内已解密的数据。EOF、超时、错误帧和证书失败不返回部分成功数据。响应的 DNS 语义仍由应用层解析与匹配。
+
+`EncryptedError` 区分无效输入、证书验证、超时、HTTP 状态、媒体类型、消息长度、提前关闭及后端错误，并保留后端错误码或 HTTP 状态。错误不能触发 UDP/TCP 回退。加密端点为域名时，初次名称解析可能通过本机配置的普通 DNS 完成。
+
 ## 验证边界
 
 端点测试只进行内存转换；预算测试传入固定时刻，不使用真实休眠。套接字测试只创建本机资源，并使用回环地址验证非阻塞状态，不联系公共 DNS。创建、移动、关闭和析构必须同时验证资源仍归唯一对象所有。

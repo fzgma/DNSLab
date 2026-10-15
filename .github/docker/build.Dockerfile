@@ -5,7 +5,7 @@ FROM ${BASE_IMAGE}
 # CI builds this image with --pull --no-cache. No dependency cache is exported.
 RUN dnf install -y gcc-toolset-15-gcc gcc-toolset-15-gcc-c++ \
         gcc-toolset-15-libstdc++-devel gcc-toolset-15-binutils \
-        git curl zip unzip tar gzip \
+        git curl zip unzip tar gzip make perl-core pkgconf-pkg-config ca-certificates \
     && dnf clean all
 ENV PATH="/opt/python/cp312-cp312/bin:${PATH}"
 RUN python -m pip install --no-cache-dir --disable-pip-version-check \
