@@ -1,123 +1,108 @@
 # DNSLab
 
-DNSLab 是一个使用 C++23 编写的 DNS 协议学习与诊断项目。当前版本为 **0.1.0 工程基线（Bootstrap）**，本次实现范围见 [docs/todo.md](docs/todo.md)。
+> 面向 Windows 和 Linux 的 C++23 DNS 命令行工具项目。
 
-当前提供：
+DNSLab 计划提供域名查询和 DNS 服务器响应比较，帮助学习 DNS 协议和排查解析问题。
 
-- `dnslab --help` 和无参数运行时的帮助信息。
-- `dnslab --version`，输出 `DNSLab 0.1.0`。
-- `dnslab_core` 中的 DNS 基础类型、错误类型，以及经过边界检查的 16 位 / 32 位大端整数读取和追加写入工具。读取使用 `std::span<const std::byte>`，通过 `std::expected` 返回越界错误。
-- Catch2 单元测试和 CLI 冒烟测试，统一由 CTest 执行。
+当前版本为 **0.1.0**，处于基础开发阶段：程序可以查看帮助和版本信息，**尚不能执行 DNS 查询**。当前请从源码构建后运行。开发进度见 [TODO](docs/todo.md)。
 
-**目前不支持网络查询。** `query`、`compare`、DNS 名称与报文解析、UDP/TCP 传输和 JSON 报告均未实现。`docs/` 下的产品与架构文档包含后续设计，不代表当前已具备这些功能。
+## 1. 功能
 
-## 构建要求
+- **查看帮助**：显示当前支持的选项；不带参数运行也会显示帮助。
+- **查看版本**：显示程序版本，当前输出为 `DNSLab 0.1.0`。
+- **基础字节工具**：核心库提供带边界检查的 16 位、32 位大端整数读取与追加写入，供后续 DNS 报文处理使用。
 
-- CMake **3.25 或更新版本**。
-- 支持 C++23 和 `std::expected` 的编译器及配套标准库。Windows 可使用 MSVC 或 MSYS2 UCRT64 GCC，Linux 使用 GCC / libstdc++；仅接受 `-std=c++23` 参数的旧工具链未必提供 `std::expected`。
-- Git，以及 vcpkg 初次引导和安装依赖所需的网络连接。
-- 依赖为 **CLI11** 和 **Catch2 v3**，在根目录 `vcpkg.json` 中声明。没有 DNS 客户端库或 JSON 库依赖。
+## 2. 快速开始
 
-以下命令均从仓库根目录执行，不需要修改 IDE 的私有配置。已在 Windows、MSYS2 UCRT64 GCC 16.2.0、CMake 4.4.3 和 Ninja 环境完成 Debug 构建，CTest 11/11 通过（10 个单元测试、140 条断言，以及 1 个覆盖 6 种调用的 CLI 冒烟测试）；下列 MSVC 与 Linux 命令尚未实测。
+先按照[构建说明](docs/BUILD.md)从源码生成程序。以下命令从仓库根目录执行。
 
-## 准备 vcpkg
+### Windows
 
-`vcpkg.json` 固定 ports 基线为 `20ceb8adbf0504d4b0d5e4058a32f9d4fc896391`，已确认该 commit 存在，对应 CLI11 **2.7.2** 和 Catch2 **3.16.0**。以下步骤同时固定 vcpkg 的源码版本，安装在已忽略的 `build-deps/vcpkg` 下。
-
-Windows PowerShell：
+使用 Ninja 构建后：
 
 ```powershell
-git clone https://github.com/microsoft/vcpkg.git build-deps/vcpkg
-git -C build-deps/vcpkg checkout 20ceb8adbf0504d4b0d5e4058a32f9d4fc896391
-$env:VCPKG_ROOT = Join-Path $PWD 'build-deps/vcpkg'
-& "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
-```
-
-Linux Bash：
-
-```bash
-git clone https://github.com/microsoft/vcpkg.git build-deps/vcpkg
-git -C build-deps/vcpkg checkout 20ceb8adbf0504d4b0d5e4058a32f9d4fc896391
-export VCPKG_ROOT="$PWD/build-deps/vcpkg"
-"$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
-```
-
-已有 vcpkg 时，可以跳过克隆和引导，将 `VCPKG_ROOT` 指向其根目录：PowerShell 使用 `$env:VCPKG_ROOT = 'C:/path/to/vcpkg'`，Bash 使用 `export VCPKG_ROOT=/path/to/vcpkg`。已有版本须支持 manifest 和固定 baseline；无需切换共享安装的 checkout。如需复现上面的 vcpkg 源码版本，可另建一份固定检出。
-
-首次配置会根据 manifest 下载和安装依赖，需要网络；运行已构建的测试不需要网络。
-
-## Windows 构建
-
-选择其中一种工具链。同一个构建目录不能混用不同编译器或生成器，切换时应使用新的目录。
-
-**MSYS2 UCRT64 GCC + Ninja：** 确保 UCRT64 的 `g++`、CMake 和 Ninja 已在 PowerShell 的 `PATH` 中，然后执行：
-
-```powershell
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-mingw-static -DVCPKG_HOST_TRIPLET=x64-mingw-static
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+# 查看帮助
 .\build\dnslab.exe --help
+
+# 查看版本
 .\build\dnslab.exe --version
-.\build\dnslab.exe
 ```
 
-**MSVC：** 安装 Visual Studio 的“使用 C++ 的桌面开发”工作负载及 Windows SDK，在 Developer PowerShell 中执行。示例使用 Visual Studio 2022；其他版本应选择对应生成器。
+如果使用 Visual Studio，按构建说明中的路径运行 `build-msvc/Debug/dnslab.exe`。
 
-```powershell
-cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build-msvc --config Debug
-ctest --test-dir build-msvc -C Debug --output-on-failure
-.\build-msvc\Debug\dnslab.exe --help
-.\build-msvc\Debug\dnslab.exe --version
-```
-
-Ninja 的可执行文件位于 `build/dnslab.exe`，Visual Studio 多配置生成器的示例路径为 `build-msvc/Debug/dnslab.exe`。构建 Release 时，修改 Ninja 的 `CMAKE_BUILD_TYPE`；MSVC 则将构建、测试和可执行文件路径中的 `Debug` 一并替换为 `Release`。
-
-## Linux：GCC + vcpkg
-
-准备满足上述 C++23 要求的 `g++`，以及 CMake、Git、Make、curl、zip、unzip 和 tar。完成前述 vcpkg 准备后，在 Bash 中执行：
+### Linux
 
 ```bash
-cmake -S . -B build -G "Unix Makefiles" \
-  -DCMAKE_CXX_COMPILER=g++ \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
 ./build/dnslab --help
 ./build/dnslab --version
-./build/dnslab
 ```
 
-可执行文件位于 `build/dnslab`。若系统默认 `g++` 太旧，将 `CMAKE_CXX_COMPILER` 指定为已安装的新编译器路径，并使用新的构建目录重新配置。
+版本输出：
 
-## 已安装依赖时直接构建
+```text
+DNSLab 0.1.0
+```
 
-如果系统或自定义安装目录中已提供 CLI11 与 Catch2 v3 的 CMake config 包，可以不传 vcpkg toolchain。使用独立构建目录，避免与已配置的 vcpkg 缓存混用。
+## 3. 命令与选项
 
-Windows MSVC：
+下表仅列出当前已经实现的用法：
+
+| 选项 | 简写 | 用途 |
+| --- | --- | --- |
+| `--help` | `-h` | 显示帮助并退出 |
+| `--version` | — | 显示版本并退出 |
+| 不带参数 | — | 显示帮助 |
+
+当前没有可用的子命令。计划中的 `query`、`compare` 及其选项见 [CLI 设计](docs/DNSLab_v0.1_MVP.md#3-cli-设计)，该设计中的待实现功能暂不可运行，`-V` 也尚未提供。
+
+## 4. 从源码构建
+
+要求 **CMake 3.25+、支持 C++23 和 `std::expected` 的编译器与标准库、CLI11 和 Catch2 v3**。
+
+若 CLI11 和 Catch2 已作为 CMake 包安装，可使用 Ninja 构建：
 
 ```powershell
-cmake -S . -B build-system -G "Visual Studio 17 2022" -A x64
-cmake --build build-system --config Debug
-ctest --test-dir build-system -C Debug --output-on-failure
-.\build-system\Debug\dnslab.exe --version
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 ```
 
-Linux：
+依赖安装、vcpkg 配置、Windows/Linux 命令和已验证的工具链见[构建与测试](docs/BUILD.md)。所有测试离线运行，不访问公共 DNS。
 
-```bash
-cmake -S . -B build-system -G "Unix Makefiles" \
-  -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-system --parallel
-ctest --test-dir build-system --output-on-failure
-./build-system/dnslab --version
+## 5. 项目结构
+
+```text
+.
+├── src/
+│   ├── main.cpp        # 程序入口与命令行选项
+│   └── dns/            # 基础类型、错误类型与字节工具
+├── tests/
+│   ├── unit/           # 字节工具单元测试
+│   └── cli_smoke.cmake # 命令行基础行为测试
+├── cmake/              # 构建时生成版本信息
+├── docs/               # 构建说明、设计与开发计划
+├── CMakeLists.txt      # 构建与测试配置
+└── vcpkg.json          # 依赖声明
 ```
 
-若依赖位于非标准目录，在配置命令中增加 `-DCMAKE_PREFIX_PATH=/path/to/dependencies`，或者分别设置 `CLI11_DIR` 和 `Catch2_DIR` 为包含各自 CMake config 文件的目录。
+## 6. 限制
 
-## 测试范围
+- 尚未实现域名和 DNS 报文解析、UDP/TCP 查询、服务器比较或 JSON 报告。
+- 当前程序不会发送网络请求，不能用来检查真实域名或 DNS 服务器。
+- Windows 的 MSYS2 UCRT64 GCC 构建已验证；MSVC 和 Linux 构建流程尚未在对应环境实测。
 
-测试覆盖大端 16 位 / 32 位整数读写、非零偏移、空输入、字节不足、末尾和超出输入范围的偏移，以及 CLI 基础行为。**所有测试离线运行，不访问公共 DNS。**
+## 7. 文档
 
-后续实现顺序及边界参见 [工程基线清单](docs/todo.md)、[架构设计](docs/DNSLab_Architecture_v0.1.md) 和 [Wire Codec 设计](docs/DNSLab_WireCodec_Design_v0.1.md)。
+设计文档包含后续功能，具体支持范围以本页和程序帮助为准。
+
+- [构建与测试](docs/BUILD.md)
+- [开发进度与待办](docs/todo.md)
+- [v0.1 功能范围与 CLI 设计](docs/DNSLab_v0.1_MVP.md)
+- [项目需求](docs/DNSLab_PRD_zh-CN.md)
+- [项目架构](docs/DNSLab_Architecture_v0.1.md)
+- [DNS 报文编解码设计](docs/DNSLab_WireCodec_Design_v0.1.md)
+- [协作与提交约定](AGENTS.md)
+
+## 8. 开源协议
+
+[GNU General Public License v3.0](LICENSE)

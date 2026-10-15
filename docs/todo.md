@@ -2,7 +2,7 @@
 
 - 对应版本：v0.1.0
 - 提交类型：工程基线 / Bootstrap
-- 建议提交信息：`chore: bootstrap C++23 CLI and test infrastructure`
+- 首个提交：`5d76fb2`；后续提交文案遵循 [仓库约束](../AGENTS.md)。
 - 当前阶段：工程基线已完成（Windows GCC/Ninja 验收通过）
 
 ## 1. 本次提交目标
@@ -115,13 +115,13 @@ Linux 的可执行文件路径和配置命令应在 README 中给出。不要要
 - [x] `git diff --check` 无空白错误。
 - [x] 变更范围只覆盖工程基线、基础字节工具、对应测试与文档。
 
-完成后提交：
+已完成的首个提交（历史记录）：
 
 ```text
 chore: bootstrap C++23 CLI and test infrastructure
 ```
 
-下一提交再进入 DNS Name 编码/解码；压缩解码需独立实现并有专门的边界测试，不要和首次工程初始化混在一起。
+后续功能迭代进入 DNS Name 编码/解码；压缩解码需独立实现并有专门的边界测试，不要和首次工程初始化混在一起。
 
 ## 6. 本次验收记录
 
@@ -134,3 +134,12 @@ chore: bootstrap C++23 CLI and test infrastructure
 - `dnslab --version` 输出 `DNSLab 0.1.0`；`git diff --check` 通过。
 - README 包含本机实际构建步骤；MSVC/Linux 流程已记录，但尚未在对应环境执行。
 - 第 4 节列出的功能保留为后续任务，本次未实现。
+
+## 7. 后续迭代
+
+- [x] 确定查询与比较命令的长短选项、默认值和输入规则，见 [MVP 命令行设计](DNSLab_v0.1_MVP.md#3-cli-设计)。
+- [x] 约定按每台服务器整次查询计算超时，包含传输回退。
+- [x] 在 [AGENTS.md](../AGENTS.md) 记录中文三段式提交文案约束。
+- [ ] 实现 DNS Name 普通编码/解码与边界测试。
+- [ ] 独立实现名称压缩解码与异常输入测试。
+- [ ] 按 [架构设计](DNSLab_Architecture_v0.1.md) 继续报文解析、查询、比较与报告功能。

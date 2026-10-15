@@ -1,9 +1,9 @@
 # DNSLab v0.1 架构设计
 
-- 文档版本：1.0
+- 文档版本：1.1
 - 适用版本：DNSLab v0.1.0 MVP
 - 语言标准：C++23
-- 状态：架构决策基线
+- 状态：架构决策基线；CLI 设计已确认，查询与比较功能待实现
 
 ## 1. 架构目标
 
@@ -43,13 +43,21 @@ DNS Wire Codec   Network
 
 ### 3.1 CLI
 
-使用 CLI11 解析参数。v0.1 命令包括 `query` 和 `compare`，并提供 `--help` 与 `--version`。命令层负责输入验证和将最终结果映射为进程退出码；具体查询流程放在 Application。
+使用 CLI11 解析参数。已确认的命令行约定以 [MVP 第 3 节](DNSLab_v0.1_MVP.md#3-cli-设计) 为准；当前工程基线仅提供 `--help`、`--version` 和无参数帮助，`query`、`compare` 及查询选项尚未实现。
+
+v0.1 使用 `query <name>` 查询恰好一个服务器，使用 `compare <name>` 比较至少两个不同端点，不提供 `-q`、`-c` 别名。长选项保留 `--` 前缀，短选项为 `-s`（server）、`-t`（type）、`-T`（transport）、`-o`（output）、`-f`（force）、`-h`（help）、`-V`（version）；`--timeout-ms` 没有短选项，不接受裸 `server` 等选项写法。默认值为 A、auto、1500 ms；超时范围为 100–30000 ms。
+
+命令层负责输入验证和将最终结果映射为进程退出码；具体查询流程放在 Application。开始网络请求前必须完成服务器字面 IP 与端口校验、规范化 IP+端口的重复检查、服务器数量校验，以及未知选项、缺值和重复单值选项检查。端点接受 IPv4、IPv4:port、裸 IPv6、[IPv6]:port，默认端口 53，显式端口范围 1–65535；单独使用 `--force` 报参数错误。
+
+无参数运行展示简要帮助，顶层与 `query --help`、`compare --help` 路径均成功退出，且不要求查询参数、不触发网络请求。`--output` 生成 JSON 时仍保留终端结果。
 
 ### 3.2 Application
 
 负责把一次查询组装为完整流程：生成事务 ID、调用编码器、使用所选传输发送请求、解析响应、验证响应与本次请求匹配、根据传输模式决定是否 TCP 回退，最后形成 `QueryResult`。
 
-v0.1 开发顺序先完成单次查询，稳定后再实现 `compare`。MVP 范围仍包含多服务器比较，每台服务器只查询一次，不做多轮统计与排名。
+Application 在每台服务器开始查询时建立一个基于 `std::chrono::steady_clock` 的绝对 deadline，并将其传给所有传输步骤。该预算覆盖 UDP、TCP 连接和收发、有效 TC 响应后的 TCP 回退；回退沿用剩余预算，不能另开一份完整 timeout。`auto` 仅因有效 TC 响应回退，不因 UDP 超时切换 TCP。
+
+v0.1 开发顺序先完成单次查询，稳定后再实现 `compare`。MVP 范围仍包含多服务器比较，每个不同端点执行一次查询，不做多轮统计与排名。每个端点有独立的总预算和结果，一台失败不能中止其他查询；整个 `compare` 不受单台预算限制，顺序实现时总耗时可超过 `--timeout-ms`。
 
 ### 3.3 DNS Wire Codec
 
@@ -61,7 +69,7 @@ v0.1 开发顺序先完成单次查询，稳定后再实现 `compare`。MVP 范�
 
 封装跨平台 Socket 与资源生命周期：UDP 收发、TCP 连接与完整读写、超时、系统错误以及 UDP 来源端点信息。v0.1 先用同步 I/O，不引入协程、事件循环或完整异步框架。
 
-所有超时使用 `std::chrono::steady_clock` 的绝对 deadline，不能在每次部分读取时重置完整 timeout。TCP DNS 消息使用两字节长度前缀；读取必须处理部分接收。
+所有操作沿用 Application 传入的绝对 deadline，使用 `std::chrono::steady_clock` 计算剩余时间。TCP 连接、部分发送、部分读取以及接收不匹配响应时均不能重置完整 timeout。TCP DNS 消息使用两字节长度前缀；读取必须处理部分接收。
 
 ### 3.5 QueryResult 与 Reporter
 
@@ -73,7 +81,7 @@ v0.1 开发顺序先完成单次查询，稳定后再实现 `compare`。MVP 范�
 - `answers`：保留 section、owner、type、TTL 和可读数据。
 - `elapsed_ms`：记录本次请求耗时；没有有效响应时为空。
 
-终端与 JSON 共用结果模型。报告写入失败由 CLI/Application 映射为退出码 3。
+终端与 JSON 共用结果模型。指定 `--output` 时同时输出终端结果与完整 JSON 报告；默认拒绝覆盖已有文件，仅 `--force` 与 `--output` 同时出现时允许覆盖。报告写入失败由 CLI/Application 映射为退出码 3。
 
 ## 4. C++23 与依赖决策
 
@@ -126,6 +134,8 @@ DNSLab/
 - 协议解析遇到任意不可信输入均不得越界读取、无限循环或因错误 count 分配大量内存。
 - 所有纯 Wire Codec 单元测试离线运行。
 - 集成测试使用本地 fake DNS server，不依赖公共 DNS。
+- CLI 测试覆盖 MVP 第 3 节的长短选项、子命令帮助、输入验证和端点去重；无效参数不能触发网络请求。
+- 本地集成测试验证每台服务器的完整查询预算，覆盖 UDP→TCP、TCP 连接、分段收发及无关响应，防止阶段切换或部分进展重置 deadline。
 - 不用 `reinterpret_cast` 或 packed struct 直接读取网络报文。
 - 不把 NXDOMAIN、SERVFAIL、REFUSED 当作传输错误。
 - 错误信息应包含稳定错误枚举与有助定位的 offset/阶段；面向用户的字符串在边界层形成。
@@ -135,7 +145,7 @@ DNSLab/
 当文档存在范围差异时，按以下规则解释：
 
 1. PRD 描述长期产品目标与 v1.0 方向。
-2. `DNSLab_v0.1_MVP.md` 对 v0.1 的范围有最高优先级，并覆盖 PRD 中未计划在 v0.1 实现的功能。
+2. `DNSLab_v0.1_MVP.md` 对 v0.1 的范围有最高优先级，并覆盖 PRD 中未计划在 v0.1 实现的功能；其中第 3 节是已确认 CLI 接口的权威约定。
 3. `DNSLab_WireCodec_Design_v0.1.md` 约束 Wire Codec 的具体协议实现。
 4. 本架构文档约束模块边界与依赖方向。
 5. `todo.md` 只定义首个代码提交，不代表整个 MVP 的完工范围。
