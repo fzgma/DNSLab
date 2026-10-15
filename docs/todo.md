@@ -62,10 +62,10 @@
 | 环境 | 状态 |
 | --- | --- |
 | Windows / MSYS2 UCRT64 GCC 16.2.0 / CMake 4.4.3 / Ninja / Debug | 当前构建成功，CTest 190/195 通过；五项 IPv6 回环相关用例失败 |
-| Windows Server 2025 / MSVC 19.51 / Release | 上一阶段 `10c164b` 通过 154 项；本阶段结果见 Actions |
-| Linux x86_64 / Ubuntu、Debian、Arch | 上一阶段同一份 GCC 15 产物分别通过 154 项；本阶段结果见 Actions |
+| Windows Server 2025 / MSVC 19.51 / Release | `6f37a19` 通过 195 项，包含 IPv6、TCP 与自动回退 |
+| Linux x86_64 / Ubuntu 26.04.1、Debian 13、Arch 20261011 | 同一份 GCC 15 产物分别通过 195 项，包含 IPv6、TCP 与自动回退 |
 
-当前测试包含 119 个单元用例、75 个系统与本地网络集成用例，以及 1 个覆盖多种调用的命令行冒烟测试，全部离线。本机单元与冒烟全部通过，集成 70/75 通过；测试分类、逐案例发现和产物迁移入口均已验证。新增阶段由[构建与测试工作流](https://github.com/fzgma/DNSLab/actions/workflows/build-test.yml)验证；上一阶段 [Actions 第 1 次运行](https://github.com/fzgma/DNSLab/actions/runs/38713336874)对应 `10c164b`，四个平台全部通过。
+当前测试包含 119 个单元用例、75 个系统与本地网络集成用例，以及 1 个覆盖多种调用的命令行冒烟测试，全部离线。本机单元与冒烟全部通过，集成 70/75 通过；测试分类、逐案例发现和产物迁移入口均已验证。[Actions 第 2 次运行](https://github.com/fzgma/DNSLab/actions/runs/38730605290)对应 `6f37a19`，四个平台全部通过，Linux 三个发行版复用同一份产物并核对哈希。
 
 - 名称测试覆盖长度边界、截断、极大偏移、异常字节、纯数字输入、压缩循环、最大指针目标和长合法引用链。
 - 报文测试覆盖查询黄金字节、标志位隔离、四个集合、A/AAAA/CNAME、未知记录、每处截断、计数与长度错误、65535 字节边界和尾随数据。
@@ -84,5 +84,6 @@
 | 压缩名称处理 | `20a8281` | CTest 50/50 |
 | 完整报文处理 | `a990ace` | CTest 81/81 |
 | UDP 查询与跨平台测试 | `10c164b` | Windows、Ubuntu、Debian、Arch 均为 CTest 154/154 |
+| TCP 查询与自动回退 | `6f37a19` | Windows、Ubuntu、Debian、Arch 均为 CTest 195/195 |
 
 历史数字用于定位阶段，不代表当前测试数量。新增功能后更新本节，不在 README 或多个设计文档中重复维护验收数字。
