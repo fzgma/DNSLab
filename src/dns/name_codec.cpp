@@ -1,5 +1,6 @@
 #include "dns/name_codec.hpp"
 
+#include <unordered_set>
 #include <utility>
 
 namespace dnslab::dns {
@@ -105,25 +106,51 @@ std::expected<DecodedName, DnsParseError>
 decode_name(std::span<const std::byte> packet, std::size_t start) {
     DnsName name;
     std::size_t cursor = start;
-    std::size_t wire_length = 1;
+    std::size_t consumed = 0;
+    std::size_t expanded_wire_length = 1;
+    bool jumped = false;
+    std::unordered_set<std::size_t> visited;
 
     for (;;) {
         if (cursor >= packet.size()) {
             return std::unexpected(DnsParseError{DnsParseErrorCode::NameOutOfBounds, cursor});
         }
+        if (!visited.insert(cursor).second) {
+            return std::unexpected(DnsParseError{DnsParseErrorCode::CompressionLoop, cursor});
+        }
         const auto length = std::to_integer<unsigned char>(packet[cursor]);
         const auto encoding = length & 0xc0U;
         if (encoding == 0xc0U) {
-            return std::unexpected(DnsParseError{
-                DnsParseErrorCode::CompressionNotSupported, cursor});
+            if (packet.size() - cursor < 2) {
+                return std::unexpected(DnsParseError{
+                    DnsParseErrorCode::CompressionPointerTruncated, cursor});
+            }
+            const std::size_t target = ((length & 0x3fU) << 8) |
+                std::to_integer<unsigned char>(packet[cursor + 1]);
+            if (target >= packet.size()) {
+                return std::unexpected(DnsParseError{
+                    DnsParseErrorCode::CompressionPointerOutOfBounds, cursor});
+            }
+            if (target >= cursor) {
+                return std::unexpected(DnsParseError{
+                    DnsParseErrorCode::CompressionPointerNotBackward, cursor});
+            }
+            if (!jumped) {
+                consumed += 2;
+            }
+            jumped = true;
+            cursor = target;
+            continue;
         }
         if (encoding != 0) {
             return std::unexpected(DnsParseError{
                 DnsParseErrorCode::ReservedLabelEncoding, cursor});
         }
         if (length == 0) {
-            ++cursor;
-            return DecodedName{std::move(name), cursor - start};
+            if (!jumped) {
+                ++consumed;
+            }
+            return DecodedName{std::move(name), consumed};
         }
 
         // cursor is within packet, so subtracting its length byte is safe.
@@ -131,7 +158,7 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
             return std::unexpected(DnsParseError{DnsParseErrorCode::NameOutOfBounds, cursor});
         }
         const auto encoded_length = std::size_t{1} + length;
-        if (encoded_length > max_wire_length - wire_length) {
+        if (encoded_length > max_wire_length - expanded_wire_length) {
             return std::unexpected(DnsParseError{
                 DnsParseErrorCode::ExpandedNameTooLong, cursor});
         }
@@ -142,7 +169,10 @@ decode_name(std::span<const std::byte> packet, std::size_t start) {
             label.push_back(static_cast<char>(std::to_integer<unsigned char>(value)));
         }
         name.labels.push_back(std::move(label));
-        wire_length += encoded_length;
+        expanded_wire_length += encoded_length;
+        if (!jumped) {
+            consumed += encoded_length;
+        }
         cursor += encoded_length;
     }
 }

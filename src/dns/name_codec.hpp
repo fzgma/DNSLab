@@ -19,8 +19,10 @@ parse_ascii_name(std::string_view input);
 [[nodiscard]] std::expected<EncodedName, DnsEncodeError>
 encode_name(const DnsName& name);
 
-// Decodes ordinary labels only, stopping at the root byte. Errors identify the
-// offending length byte, or the requested cursor when that byte is missing.
+// Decodes labels and backward compression pointers relative to the full packet.
+// consumed counts only bytes at start, including the first pointer when present.
+// Errors identify the offending length/pointer byte or repeated loop cursor;
+// when a length byte is missing, the error identifies the requested cursor.
 [[nodiscard]] std::expected<DecodedName, DnsParseError>
 decode_name(std::span<const std::byte> packet, std::size_t start);
 

@@ -1,6 +1,6 @@
 # DNSLab v0.1 — DNS Wire Codec 详细设计
 
-- 状态：普通名称处理已实现；压缩解码与完整消息处理待实现
+- 状态：名称处理及压缩解码已实现；完整消息处理待实现
 - 语言：C++23
 - 范围：DNS wire message 的构造、结构解析与名称压缩处理
 - 不包含：Socket、重试策略、终端输出、JSON 序列化、DoH/DoT、DNSSEC 验证
@@ -180,6 +180,7 @@ DNS 固定 Header 长度为 12 字节。所有多字节整数均以 network byte
 - `NameInputError` 保存 `code` 和原始输入中的字节 `offset`。空输入位置为 0；空标签、标签过长或总长度超限指向相应标签起点；非法字符与首尾连字符指向具体字节。
 - `DnsEncodeError` 保存 `code` 和 `label_index`，标识首个不合法或使完整名称超长的标签；编码器始终自行校验标签长度和总长度。
 - `DnsParseError` 的 `offset` 相对于整个输入报文。非法起点和缺少终止字节指向当前读取位置；截断标签、保留编码和展开名称超限指向相应长度字节。
+- 压缩指针截断、目标越界和非向后引用指向该指针的首字节；循环错误指向重复访问的位置。跳转后遇到的错误仍使用目标所在报文位置。
 
 ## 7. 名称压缩解码算法
 
@@ -210,13 +211,15 @@ decode_name(std::span<const std::byte> packet, std::size_t start);
 循环处理当前 octet：
 
 1. `cursor >= packet.size()`：`NameOutOfBounds`。
-2. 若最高两位是 `11`，这是 compression pointer：确认有第二字节；计算 `target = ((first & 0x3f) << 8) | second`；确认 target 在 packet 内且 `target < pointer_offset`；首次遇到指针时将 2 加到 `consumed`；设置 `jumped` 并跳到 target。
-3. 若最高两位为 `01` 或 `10`：`ReservedLabelEncoding`。
-4. 若 octet 为 0：若尚未 jump，`consumed += 1`；完成。
-5. 否则 octet 是 1–63 的普通 label 长度；确保标签范围完整在 packet 内；增加 `1 + length` 到 expanded wire 长度且不超过 255；复制 label bytes；若尚未 jump，增加 `1 + length` 到 `consumed`；继续到下一个 label。
-6. 若当前 offset 已访问过：`CompressionLoop`。
+2. 在读取当前字节和进入任何分支之前检查 `visited`；若当前 offset 已访问过，返回 `CompressionLoop`，否则记录该 offset。
+3. 若最高两位是 `11`，这是 compression pointer：确认有第二字节；计算 `target = ((first & 0x3f) << 8) | second`；确认 target 在 packet 内且 `target < pointer_offset`；首次遇到指针时将 2 加到 `consumed`；设置 `jumped` 并跳到 target。
+4. 若最高两位为 `01` 或 `10`：`ReservedLabelEncoding`。
+5. 若 octet 为 0：若尚未 jump，`consumed += 1`；完成。
+6. 否则 octet 是 1–63 的普通 label 长度；确保标签范围完整在 packet 内；增加 `1 + length` 到 expanded wire 长度且不超过 255；复制 label bytes；若尚未 jump，增加 `1 + length` 到 `consumed`；继续到下一个 label。
 
 严格向后指针约束符合 RFC 1035 所描述的 prior occurrence 压缩格式，并限制恶意 forward reference。额外的 visited 检查仍然需要，因为即使每个指针在物理 offset 上都向后，标签数据也可能让解码路径最终回到先前访问过的 pointer。
+
+实现使用迭代循环，`visited` 只记录实际访问过的位置，不按整个报文长度预分配。名称起点不受指针的 14 位目标范围限制；不设置任意的小跳转次数上限，以免拒绝合法的多级压缩链。
 
 ### 7.2 重要不变量
 

@@ -51,12 +51,13 @@ if(BUILD_TESTING)
     find_package(Catch2 3 CONFIG REQUIRED)
     add_executable(dnslab_tests
         tests/unit/byte_utils_tests.cpp
-        tests/unit/name_codec_tests.cpp)
+        tests/unit/name_codec_tests.cpp
+        tests/unit/name_compression_tests.cpp)
     target_link_libraries(dnslab_tests PRIVATE dnslab_core Catch2::Catch2WithMain)
     dnslab_enable_warnings(dnslab_tests)
 
     include(Catch)
-    catch_discover_tests(dnslab_tests)
+    catch_discover_tests(dnslab_tests PROPERTIES TIMEOUT 10)
     add_test(NAME dnslab_cli_smoke
         COMMAND "${CMAKE_COMMAND}"
             "-DDNSLAB_EXECUTABLE=$<TARGET_FILE:dnslab>"

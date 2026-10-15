@@ -327,13 +327,6 @@ TEST_CASE("Ordinary name decoding rejects reserved label encodings",
     }
 }
 
-TEST_CASE("Compression pointers report the temporary unsupported status",
-          "[name_codec][decode][compression_pending]") {
-    // Replace this transition test when the separate compression step lands.
-    const Packet packet{std::byte{0x00}, std::byte{0xC0}, std::byte{0x00}};
-    check_decode_error(packet, 1, DnsParseErrorCode::CompressionNotSupported, 1);
-}
-
 TEST_CASE("Wire names preserve arbitrary label octets and format them safely",
           "[name_codec][encode][decode][format]") {
     const std::string label{

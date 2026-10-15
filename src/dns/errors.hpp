@@ -34,9 +34,11 @@ enum class DnsParseErrorCode {
     FieldOutOfBounds,
     NameOutOfBounds,
     ReservedLabelEncoding,
+    CompressionPointerTruncated,
+    CompressionPointerOutOfBounds,
+    CompressionPointerNotBackward,
+    CompressionLoop,
     ExpandedNameTooLong,
-    // Transitional error until compression decoding is implemented separately.
-    CompressionNotSupported,
 };
 
 struct DnsParseError {
