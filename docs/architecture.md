@@ -1,6 +1,6 @@
 # 架构
 
-本文说明模块职责、依赖方向和一次查询的数据流。产品目标见 [prd.md](prd.md)，首版范围见 [mvp.md](mvp.md)，实际完成情况见 [todo.md](todo.md)。下述查询、传输和报告流程是待实现设计。
+本文说明模块职责、依赖方向和一次查询的数据流。产品目标见 [prd.md](prd.md)，首版范围见 [mvp.md](mvp.md)，实际完成情况见 [todo.md](todo.md)。当前已实现单服务器 UDP 查询用例；完整命令、TCP 回退、比较和报告仍为后续设计。
 
 ## 模块与依赖
 
@@ -22,7 +22,7 @@ flowchart TD
 | 查询结果 | 保存服务器、尝试过程、有效响应及失败原因 | 不触发新的请求 |
 | 报告 | 根据同一份结果生成终端输出和 JSON | 不重新查询、不改变查询结论 |
 
-当前代码包含程序入口、字节工具、名称处理、查询报文编码、完整消息解析，以及 `src/net/` 中的端点校验、套接字生命周期和查询预算。后续职责按需要落在 `src/cli/`、`src/app/` 和 `src/report/`，无需提前创建空目录或通用框架。
+当前代码包含程序入口、`src/dns/` 的报文处理、`src/net/` 的端点、资源、预算与 UDP 收发，以及 `src/app/` 的响应匹配和单服务器 UDP 查询。命令与报告接入时再创建对应目录，无需提前创建空目录或通用框架。
 
 ## 单服务器流程
 
@@ -35,13 +35,45 @@ flowchart TD
 
 结构可解析不代表响应属于本次请求。来源、事务 ID、标志及问题匹配均通过后，才能接受为有效响应；名称匹配仅折叠 ASCII 大小写。忽略不匹配数据不能延长截止时间。
 
+### 已实现的 UDP 用例
+
+`src/app/udp_query.hpp` 的 `query_udp(question, server, budget, transaction_id)` 返回 `std::expected<UdpQueryResult, UdpQueryError>`。预算默认使用已确认的查询默认值；事务 ID 可由调用方指定，也可由用例生成。调用前应完成用户输入校验，用例仍独立检查预算范围、目标端口和问题编码，非法参数不能发包。
+
+每次调用只创建一次截止时间、发送一次查询，不重传。收到数据后先比较来源端点，来源不符时直接忽略；来源相同才解析完整消息并匹配问题。正确响应到达后仍检查截止时间，成功结果保留服务器、问题、事务 ID、完整响应、微秒耗时和忽略的数据报数量。
+
+`src/app/response_validator.hpp` 的 `validate_response(response, question, transaction_id)` 只处理已经解析的消息，按下列顺序返回首个不匹配项：
+
+| 不匹配项 | 检查 |
+| --- | --- |
+| `NotResponse` | QR 必须为 1 |
+| `TransactionId` | 事务 ID 必须相同 |
+| `Opcode` | OPCODE 必须为 0 |
+| `QuestionCount` | 必须恰好有一个问题 |
+| `QuestionName` | 名称按标签边界与 ASCII 大小写无关规则比较 |
+| `QuestionType` | 类型必须相同 |
+| `QuestionClass` | class 必须相同 |
+
+有效的非零 RCODE、空 Answer、TC 及其他响应标志不会单独导致拒绝；当前 UDP 用例保留 TC，但不触发 TCP。应用层不把来源校验放入纯报文解析器。
+
+错误保留分类 `code`、对应详情 `detail` 和 `ignored_datagrams`：
+
+| 查询错误 | 行为 |
+| --- | --- |
+| `InvalidTimeout`、`InvalidEndpoint`、`Encode` | 预算、目标端口或问题编码不合法，发包前失败 |
+| `IdGeneration` | 自动生成事务 ID 失败，发包前失败 |
+| `Network` | 网络调用失败，保留操作阶段、系统码与网络错误分类 |
+| `Timeout` | 预算耗尽且没有收到正确来源的无效响应；没有响应或只有错误来源均属于此类 |
+| `InvalidResponse` | 预算耗尽前收到过正确来源的畸形或不匹配响应，保留最近一次解析错误或不匹配原因 |
+
+畸形或不匹配的响应不立即终止等待；后续有效响应仍可成功，但等待不能续期。`ignored_datagrams` 统计来源错误与被拒绝的数据报总数。详情使用组合类型保存原始错误，不在核心层拼接用户提示。
+
 ## 时间与传输
 
 每台服务器整个查询共用一个基于 `std::chrono::steady_clock` 的截止时间。UDP 收发、TCP 连接和收发、截断回退均使用剩余预算；部分收发和收到无关数据不能重置计时。具体选项范围由 [cli.md](cli.md) 维护。
 
 首版采用同步 I/O 和薄的平台适配层。Windows 正确管理 Winsock 生命周期，Linux 正确管理文件描述符；套接字通过 RAII 释放。所有可能阻塞的操作受截止时间控制。
 
-已实现的套接字默认非阻塞，后续同步查询流程通过可读、可写等待配合剩余预算完成收发。端点模型、资源所有权和截止时间接口见 [network.md](network.md)；目前尚未提供连接、等待和收发功能。
+已实现的套接字默认非阻塞，同步 UDP 查询通过可读、可写等待配合剩余预算完成收发。端点模型、资源所有权、截止时间与收发接口见 [network.md](network.md)。TCP 连接和收发仍待实现。
 
 TCP 消息带两字节长度前缀。实现必须完成部分发送、前缀读取和正文读取，并校验声明长度。UDP 超时直接记录超时，不能触发自动 TCP 查询。
 
@@ -69,7 +101,8 @@ TCP 消息带两字节长度前缀。实现必须完成部分发送、前缀读�
 ## 构建与依赖
 
 - 使用 C++23，要求 `std::expected` 和 `std::span`；关闭编译器语言扩展。
-- CMake 构建 `dnslab_core`、`dnslab` 和 `dnslab_tests`；测试由 CTest 执行。
+- CMake 构建 `dnslab_core`、`dnslab`、`dnslab_tests` 和 `dnslab_integration_tests`；CTest 按 `smoke`、`unit`、`integration` 标签执行。
+- Linux 持续集成只编译一次，产物交给 Ubuntu、Debian、Arch 分别运行；`tests/runtime` 只注册已有产物的测试，不查找编译器或重新编译。环境和执行入口见[构建说明](build.md#持续集成)。
 - 已使用 CLI11 和 Catch2；JSON 报告开始实现时才引入相应依赖。
 - vcpkg 固定实际验证的基线，具体步骤见 [build.md](build.md)。
 - 自行实现 DNS 报文处理，不引入替代核心解析器的 DNS 客户端库。

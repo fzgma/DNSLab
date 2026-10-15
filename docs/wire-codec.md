@@ -1,6 +1,6 @@
 # DNS 报文编解码
 
-本文定义已实现的名称处理、查询报文编码和完整消息解析的接口、边界、算法和错误约定。查询输入规则统一见 [validation.md](validation.md)，与当前请求的匹配由 [architecture.md](architecture.md) 中待实现的应用层负责。
+本文定义已实现的名称处理、查询报文编码和完整消息解析的接口、边界、算法和错误约定。查询输入规则统一见 [validation.md](validation.md)，与当前请求的匹配由 [architecture.md](architecture.md#已实现的-udp-用例) 中的应用层负责。
 
 ## 边界与接口
 

@@ -90,4 +90,30 @@ ctest --test-dir build-system --output-on-failure
 
 Ninja 等单配置生成器通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`。运行路径随生成器和配置变化：Ninja 为 `build/dnslab.exe`（Windows）或 `build/dnslab`（Linux），上述 MSVC 示例为 `build-msvc/Debug/dnslab.exe`。
 
-核心测试覆盖整数读写、域名与端点校验、名称与完整报文处理、套接字生命周期、查询预算，以及命令行基础行为。单元测试设有 10 秒上限以暴露无限循环；预算测试使用固定时刻，套接字测试仅使用本机资源和回环地址。未来收发测试使用本地模拟服务器，不访问公共 DNS。Windows 由构建目标自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+测试覆盖输入与报文处理、套接字生命周期、查询预算、UDP 收发、响应匹配和命令行基础行为，并使用本地模拟服务器验证 UDP 查询。单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒；预算单元测试使用固定时刻，传输与查询测试只使用本机资源、回环地址和临时端口，不访问公共 DNS。测试线程由 CMake 的 `Threads::Threads` 目标配置，Windows 自动链接系统网络库，无需添加新的第三方依赖。当前结果与后续工作统一记录在 [todo.md](todo.md)。
+
+CTest 使用三个互不重叠的标签：`smoke` 检查程序调用，`unit` 检查纯内存逻辑，`integration` 检查系统套接字、UDP 收发和本地模拟服务器。可以分别运行；多配置生成器额外传入 `-C Release` 或对应配置：
+
+```bash
+ctest --test-dir build -L '^smoke$' --output-on-failure --no-tests=error
+ctest --test-dir build -L '^unit$' --output-on-failure --no-tests=error
+ctest --test-dir build -L '^integration$' --output-on-failure --no-tests=error
+```
+
+IPv4 和 IPv6 均为必测项；环境不支持或回环收发失败会导致测试失败，不按跳过处理。
+
+## 持续集成
+
+[构建与测试工作流](../.github/workflows/build-test.yml) 在推送、拉取请求和手动触发时执行，暂不配置依赖、构建或容器缓存。依赖按 `vcpkg.json` 的固定基线安装。
+
+| 任务 | 环境 | 行为 |
+| --- | --- | --- |
+| Windows | `windows-latest`，MSVC x64 | 独立构建 Release，静态链接依赖及运行库，运行三类测试 |
+| Linux 构建 | `manylinux_2_28_x86_64`，GCC Toolset 15 | 生成一批 x86_64 Release 产物，静态链接 C++ 运行库 |
+| Ubuntu | `ubuntu:rolling` | 运行同一批 Linux 产物的三类测试 |
+| Debian | `debian:stable-slim` | 运行同一批 Linux 产物的三类测试 |
+| Arch | `archlinux:base` | 运行同一批 Linux 产物的三类测试 |
+
+Ubuntu 使用最新稳定发行版（包含非 LTS）的镜像别名，Debian 跟踪 stable，Arch 跟踪滚动版。每次获取当前镜像并输出系统版本；承载 Docker 的 Ubuntu runner 不代表被测发行版。别名定义参考 [Ubuntu 官方镜像](https://hub.docker.com/_/ubuntu)、[Debian 官方镜像](https://hub.docker.com/_/debian)和 [Arch 官方镜像](https://hub.docker.com/_/archlinux)。实际测试结果以对应 Actions 日志和[验证状态](todo.md#验证状态)为准。
+
+Linux 构建任务将程序、两个测试程序及测试注册所需文件打包，三个发行版任务下载同一个包。运行环境只安装测试工具，通过 `tests/runtime` 重新注册已有程序的测试，不安装编译器或重新生成二进制。构建环境与运行环境分离，确保验证的是同一份产物在不同发行版上的行为。各任务保留测试日志，便于定位具体用例失败。

@@ -1,0 +1,204 @@
+name: 构建与测试
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_BINARY_SOURCES: clear
+  VCPKG_DISABLE_METRICS: '1'
+
+jobs:
+  windows:
+    name: Windows latest / MSVC x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 按清单固定 vcpkg 版本
+        run: |
+          $manifest = Get-Content -LiteralPath vcpkg.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $baseline = $manifest.'builtin-baseline'
+          if ($baseline -notmatch '^[0-9a-f]{40}$') { throw '清单缺少有效的 vcpkg 基线' }
+          $vcpkgDirectory = Join-Path $env:RUNNER_TEMP 'dnslab-vcpkg'
+          git clone --filter=blob:none --no-checkout https://github.com/microsoft/vcpkg.git $vcpkgDirectory
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $vcpkgDirectory checkout --detach $baseline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$vcpkgDirectory/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "VCPKG_ROOT=$vcpkgDirectory" >> $env:GITHUB_ENV
+      - name: 使用默认 Visual Studio 工具链配置静态 Release
+        run: |
+          # 不固定生成器或工具集版本，使用 runner 当前默认的 Visual Studio。
+          cmake -S . -B build -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DVCPKG_HOST_TRIPLET=x64-windows-static `
+            -DCMAKE_CONFIGURATION_TYPES=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_TESTING=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path build/test-results -Force | Out-Null
+      - name: 编译程序与全部测试
+        id: build
+        run: cmake --build build --config Release --parallel 2
+      - name: 运行冒烟测试
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >-
+          ctest --test-dir build -C Release -L '^smoke$' --output-on-failure --no-tests=error
+          --output-log "$env:GITHUB_WORKSPACE/build/test-results/smoke.log"
+          --output-junit "$env:GITHUB_WORKSPACE/build/test-results/smoke.xml"
+      - name: 运行单元测试
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >-
+          ctest --test-dir build -C Release -L '^unit$' --output-on-failure --no-tests=error
+          --output-log "$env:GITHUB_WORKSPACE/build/test-results/unit.log"
+          --output-junit "$env:GITHUB_WORKSPACE/build/test-results/unit.xml"
+      - name: 运行本地网络集成测试
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >-
+          ctest --test-dir build -C Release -L '^integration$' --output-on-failure --no-tests=error
+          --output-log "$env:GITHUB_WORKSPACE/build/test-results/integration.log"
+          --output-junit "$env:GITHUB_WORKSPACE/build/test-results/integration.xml"
+      - name: 保存 Windows 产物
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: dnslab-windows-x86_64
+          archive: true
+          path: |
+            build/Release/dnslab.exe
+            build/Release/dnslab_tests.exe
+            build/Release/dnslab_integration_tests.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: 保存 Windows 失败日志
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-windows
+          archive: true
+          path: |
+            build/test-results/
+            build/Testing/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/vcpkg-manifest-install.log
+            ${{ runner.temp }}/dnslab-vcpkg/buildtrees/**/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  linux-build:
+    name: Linux / manylinux_2_28 / GCC 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 准备无缓存的 Linux 构建环境
+        run: |
+          mkdir -p build/ci-logs/linux-build
+          docker build --pull --no-cache \
+            --file .github/docker/build.Dockerfile \
+            --tag dnslab-linux-build . \
+            2>&1 | tee build/ci-logs/linux-build/image.log
+      - name: 构建通用 Linux 程序和测试包
+        run: |
+          docker run --rm --network host \
+            --volume "$PWD:/workspace" --workdir /workspace \
+            --env VCPKG_BINARY_SOURCES --env VCPKG_DISABLE_METRICS \
+            dnslab-linux-build bash .github/scripts/build-linux.sh \
+            2>&1 | tee build/ci-logs/linux-build/build.log
+      - name: 保存供全部 Linux 发行版复用的产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: dnslab-linux-x86_64
+          archive: true
+          path: build/dnslab-linux-x86_64.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: 保存 Linux 构建失败日志
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-linux-build
+          archive: true
+          path: |
+            build/ci-logs/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+            build/vcpkg-manifest-install.log
+            build-deps/vcpkg/buildtrees/**/*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  linux-test:
+    name: Linux / ${{ matrix.distribution }} / 同一构建产物
+    needs: linux-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distribution: ubuntu
+            image: ubuntu:rolling
+          - distribution: debian
+            image: debian:stable-slim
+          - distribution: arch
+            image: archlinux:base
+    defaults:
+      run:
+        shell: bash
+    env:
+      DNSLAB_TEST_DISTRIBUTION: ${{ matrix.distribution }}
+      DNSLAB_TEST_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: 下载同一份 Linux 构建产物
+        uses: actions/download-artifact@v8
+        with:
+          name: dnslab-linux-x86_64
+          path: build
+      - name: 准备最新发行版测试环境
+        run: |
+          mkdir -p "build/ci-logs/$DNSLAB_TEST_DISTRIBUTION"
+          docker build --pull --no-cache \
+            --file .github/docker/test.Dockerfile \
+            --build-arg "BASE_IMAGE=$DNSLAB_TEST_IMAGE" \
+            --tag dnslab-linux-test . \
+            2>&1 | tee "build/ci-logs/$DNSLAB_TEST_DISTRIBUTION/image.log"
+      - name: 运行冒烟、单元和本地网络集成测试
+        run: |
+          # host 网络保留真实 IPv4/IPv6 回环；测试脚本只注册并运行既有二进制。
+          docker run --rm --network host \
+            --volume "$PWD:/workspace" --workdir /workspace \
+            dnslab-linux-test bash .github/scripts/test-linux.sh "$DNSLAB_TEST_DISTRIBUTION" \
+            2>&1 | tee "build/ci-logs/$DNSLAB_TEST_DISTRIBUTION/run.log"
+      - name: 保存 Linux 测试失败日志
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-linux-${{ matrix.distribution }}
+          archive: true
+          path: |
+            build/ci-logs/
+            build/runtime-tests/**/Testing/
+            build/runtime-tests/**/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: warn
+          retention-days: 14

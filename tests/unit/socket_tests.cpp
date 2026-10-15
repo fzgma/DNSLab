@@ -62,11 +62,6 @@ Socket open_socket(IpFamily family, SocketTransport transport) {
     if (!result) {
         CAPTURE(static_cast<int>(family), static_cast<int>(transport),
                 static_cast<int>(result.error().operation), result.error().system_code);
-        if (family == IpFamily::V6 &&
-            result.error().operation == NetworkOperation::SocketCreate &&
-            result.error().system_code == unsupported_family) {
-            SKIP("The operating system explicitly reports IPv6 is unsupported");
-        }
         REQUIRE(result.has_value());
     }
     return std::move(*result);

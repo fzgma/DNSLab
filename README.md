@@ -14,6 +14,7 @@ DNSLab 计划提供域名查询和 DNS 服务器响应比较，帮助学习 DNS 
 - **域名基础处理**：核心库支持输入校验、名称编码、普通及压缩名称解码、大小写无关比较和特殊字符转义显示。
 - **DNS 报文处理**：核心库可生成 A/AAAA 查询报文，解析完整消息中的问题和各组记录，识别 A/AAAA/CNAME，并保留不支持的记录数据。
 - **网络基础**：核心库支持服务器地址校验与重复检测、UDP/TCP 套接字资源管理、超时值校验和剩余预算计算，尚未接入查询命令。
+- **单服务器 UDP 用例**：核心库可发送查询并接收响应，核对来源、事务信息和问题；忽略无关数据时仍遵守同一个超时预算。查询命令尚未接入。
 
 ## 2. 快速开始
 
@@ -72,6 +73,8 @@ ctest --test-dir build --output-on-failure
 
 依赖安装和 Windows/Linux 命令见[构建与测试](docs/build.md)，实际验证环境见[开发进度](docs/todo.md#验证状态)。所有测试离线运行，不访问公共 DNS。
 
+[GitHub Actions](https://github.com/fzgma/DNSLab/actions/workflows/build-test.yml) 覆盖 Windows、Ubuntu、Arch、Debian，分别运行冒烟、单元和集成测试。Linux 编译一次后复用同一份产物，环境与版本策略见[持续集成](docs/build.md#持续集成)。
+
 ## 5. 项目结构
 
 ```text
@@ -79,11 +82,15 @@ ctest --test-dir build --output-on-failure
 ├── src/
 │   ├── main.cpp        # 程序入口与命令行选项
 │   ├── dns/            # 基础类型、字节工具、域名与报文处理
-│   └── net/            # 端点校验、套接字与查询预算
+│   ├── net/            # 端点校验、套接字、查询预算与 UDP 收发
+│   └── app/            # 响应匹配与单服务器 UDP 查询
 ├── tests/
 │   ├── unit/           # 报文处理与网络基础测试
+│   ├── integration/    # 本地模拟服务器查询测试
+│   ├── runtime/        # 直接测试已有产物的入口
 │   └── cli_smoke.cmake # 命令行基础行为测试
-├── cmake/              # 构建时生成版本信息
+├── cmake/              # 版本信息与共享测试注册
+├── .github/            # Windows/Linux 构建与测试流程
 ├── docs/               # 构建说明、设计与开发计划
 ├── CMakeLists.txt      # 构建与测试配置
 └── vcpkg.json          # 依赖声明
@@ -91,7 +98,7 @@ ctest --test-dir build --output-on-failure
 
 ## 6. 限制
 
-- 尚未实现 UDP/TCP 查询、服务器比较或 JSON 报告。
+- 尚未接入查询命令，TCP 收发与回退、服务器比较和 JSON 报告也仍待实现。
 - 当前程序不会发送网络请求，不能用来检查真实域名或 DNS 服务器。
 - Windows 的 MSYS2 UCRT64 GCC 构建已验证；MSVC 和 Linux 构建流程尚未在对应环境实测。
 

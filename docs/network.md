@@ -1,6 +1,6 @@
-# 网络基础
+# 网络传输
 
-本文定义已实现的端点模型、套接字所有权和查询预算。输入规则见 [validation.md](validation.md)，一次查询如何使用这些模块见 [architecture.md](architecture.md)。UDP/TCP 收发、响应匹配和截断回退尚未实现。
+本文定义已实现的端点模型、套接字所有权、查询预算和 UDP 收发。输入规则见 [validation.md](validation.md)，响应匹配与单服务器查询用例见 [architecture.md](architecture.md)。TCP 连接、收发和截断回退尚未实现。
 
 所有接口位于 `dnslab::net`，核心层不打印提示，也不将网络错误解释为 DNS 响应码。
 
@@ -32,15 +32,27 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 ### 网络错误
 
-`src/net/errors.hpp` 定义 `NetworkError`，保存 `operation` 与原生 `system_code`，不分配动态说明文本。
+`src/net/errors.hpp` 定义 `NetworkError`，保存 `operation`、原生 `system_code` 与错误分类 `code`，不分配动态说明文本。`code` 默认为 `System`，原有初始化和创建错误保持此分类。
 
 | 操作阶段 | 含义 |
 | --- | --- |
 | `Startup` | Windows 网络运行时初始化或版本协商失败 |
 | `SocketCreate` | 创建失败，或地址族、传输类型无效 |
 | `SetNonBlocking` | 创建后的非阻塞配置失败 |
+| `Bind` | 绑定本机地址失败 |
+| `LocalEndpoint` | 读取本机地址失败 |
+| `WaitRead`、`WaitWrite` | 等待可读、可写失败或预算耗尽 |
+| `Send`、`Receive` | 发送、接收数据报失败或预算耗尽 |
 
-系统调用失败后立即保存错误码，再清理资源，避免清理过程覆盖错误。收发、等待及超时的错误与状态在对应功能接入时扩展；不能用 DNS RCODE 替代。
+| 错误分类 | 含义 |
+| --- | --- |
+| `System` | 平台调用失败，保留原生错误码 |
+| `TimedOut` | 同一绝对截止时间已经到期 |
+| `InvalidArgument` | 参数无效，例如无效套接字、目标端口为零或超长数据 |
+| `DatagramTruncated` | 数据报接收不完整，不能把前缀当成完整消息 |
+| `IncompleteDatagram` | 未完整发送一个数据报，不能拆成多次发送 |
+
+系统调用失败后立即保存错误码，再清理资源，避免清理过程覆盖错误。主动检测到的错误通常使用系统码 0；平台报告的截断可以保留原生码。等待阶段的错误原样传递，不改写成发送或接收阶段；网络错误不能用 DNS RCODE 替代。
 
 ## 查询预算
 
@@ -58,8 +70,28 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 `after` 对零或负的内部预算使用起始时刻，对无法表示的未来时刻饱和到时钟上限；`remaining` 的极端差值也不会发生有符号溢出，超过毫秒类型表示能力时饱和。用户输入仍必须先通过 `parse_timeout_ms`，范围和错误由 [validation.md](validation.md#超时输入) 定义。
 
+## UDP 与等待
+
+`src/net/udp.hpp` 提供以下接口，调用方持有由 `Socket::open` 创建的套接字；收发接口用于 UDP 套接字。
+
+| 接口 | 用途 |
+| --- | --- |
+| `bind_socket(socket, endpoint)` | 绑定本机地址，端口 0 表示让系统分配临时端口 |
+| `local_endpoint(socket)` | 读取本机实际地址与端口 |
+| `wait_socket(socket, interest, deadline)` | 按 `WaitInterest::Read` 或 `Write` 等待可读、可写 |
+| `send_datagram(socket, destination, bytes, deadline)` | 发送一个完整数据报，不连接服务器、不拆分消息 |
+| `receive_datagram(socket, deadline)` | 返回 `Datagram`，包含完整 `bytes` 与来源 `sender` |
+
+地址与系统套接字地址在实现内部转换，公开头不暴露平台结构。来源端点同时包含地址族、地址字节和端口，是否属于本次请求由应用层判断。
+
+收发先尝试非阻塞调用，需要等待时复用传入的截止时间。被中断、暂时不可读写、系统等待返回或收到无关数据都不能重建预算；操作前后检查到期。系统等待参数按平台可表示范围截断，等待结束后重新读取剩余时间。
+
+零字节数据报是合法的传输结果，但不是完整 DNS 消息。接收容量为 65535 字节；截断必须返回错误，不向调用方提供可被误接受的前缀。发送拒绝超过此上限的数据，平台对实际 UDP 载荷的更小限制仍由系统错误体现。目标端口不能为零；绑定临时本机端口不受此限制。
+
+传输层不重传、不验证 DNS 标志，也不根据 TC 触发 TCP。显式 UDP 查询可返回带 TC 标志的有效消息。
+
 ## 验证边界
 
 端点测试只进行内存转换；预算测试传入固定时刻，不使用真实休眠。套接字测试只创建本机资源，并使用回环地址验证非阻塞状态，不联系公共 DNS。创建、移动、关闭和析构必须同时验证资源仍归唯一对象所有。
 
-本地模拟服务器、收发与回退测试留待传输功能实现。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。
+UDP 测试使用 IPv4/IPv6 回环地址和临时端口，验证地址转换、来源、字节保留、空数据报与截止时间；查询集成测试用本地模拟服务器验证有效响应、错误来源、无效消息和超时。TCP 与回退测试留待对应功能实现。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。

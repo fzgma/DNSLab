@@ -1,0 +1,10 @@
+# Both the project and vcpkg ports use this compiler and the generic x86-64 ISA.
+set(dnslab_gcc_prefix "/opt/rh/gcc-toolset-15/root/usr")
+set(CMAKE_C_COMPILER "${dnslab_gcc_prefix}/bin/gcc" CACHE FILEPATH "" FORCE)
+set(CMAKE_CXX_COMPILER "${dnslab_gcc_prefix}/bin/g++" CACHE FILEPATH "" FORCE)
+set(CMAKE_AR "${dnslab_gcc_prefix}/bin/ar" CACHE FILEPATH "" FORCE)
+set(CMAKE_RANLIB "${dnslab_gcc_prefix}/bin/ranlib" CACHE FILEPATH "" FORCE)
+set(CMAKE_C_FLAGS_INIT "-march=x86-64 -mtune=generic")
+set(CMAKE_CXX_FLAGS_INIT "-march=x86-64 -mtune=generic")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-static-libstdc++ -static-libgcc")
+include("$ENV{VCPKG_ROOT}/scripts/toolchains/linux.cmake")
