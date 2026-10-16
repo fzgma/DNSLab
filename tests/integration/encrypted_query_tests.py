@@ -21,6 +21,10 @@ import threading
 import time
 import traceback
 
+# 共用独立报文黄金值，不在源目录生成导入缓存。
+sys.dont_write_bytecode = True
+import plain_query_cli_tests as plain
+
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "tls"
 CA_FILE = FIXTURES / "ca.pem"
@@ -362,12 +366,12 @@ class TlsServer:
 
 
 def invoke(server, *, transport=None, ca=True, timeout=1500, query_type="A", env=None,
-           host="127.0.0.1", ca_file=None):
+           host="127.0.0.1", ca_file=None, name="example.com"):
     """运行真实查询命令并收集退出码及 UTF-8 输出。"""
     transport = transport or server.transport
     endpoint = (f"https://{host}:{server.port}/dns-query?fixture=1" if transport == "doh"
                 else f"{host}:{server.port}")
-    command = [str(EXECUTABLE), "query", "example.com", "--" + transport, endpoint,
+    command = [str(EXECUTABLE), "query", name, "--" + transport, endpoint,
                "--type", query_type, "--timeout-ms", str(timeout)]
     if ca:
         command.extend(["--ca-file", str(ca_file if ca_file is not None else CA_FILE)])
@@ -398,15 +402,15 @@ def check_failure(result, label=None):
         require(label.lower() in result.stderr.lower(), result.stderr)
 
 
-def check_request(server, query_type=1):
+def check_request(server, query_type=1, wire_name=plain.QUESTION_NAME):
     """独立检查客户端发送的 DNS 报文字节及传输约定。"""
     require(server.accepted == 1, f"预期一个连接，实际为 {server.accepted}")
     require(len(server.requests) == 1, f"预期一个查询，实际为 {server.requests}")
     request = server.requests[0]
     wire = request["body"]
-    require(len(wire) == 29, f"查询长度错误: {wire.hex()}")
+    require(len(wire) == 16 + len(wire_name), f"查询长度错误: {wire.hex()}")
     require(wire[2:12] == bytes.fromhex("01000001000000000000"), wire.hex())
-    require(wire[12:] == b"\x07example\x03com\x00" + struct.pack("!HH", query_type, 1),
+    require(wire[12:] == wire_name + struct.pack("!HH", query_type, 1),
             wire.hex())
     if server.transport == "doh":
         require(wire[:2] == b"\x00\x00", "DoH 默认事务 ID 应为零")
@@ -452,6 +456,98 @@ def dot_framed_answers():
             result = invoke(server, query_type=query_type)
         check_success(result, "dot", answer=text)
         check_request(server, 28 if query_type.upper() == "AAAA" else 1)
+
+
+def check_encrypted_direct_type(transport, kind):
+    """验证新类型经过完整 TLS 与 HTTP 或长度帧交换后正确显示直接回答。"""
+    for ipv6_ptr in ((False, True) if kind == "PTR" else (False,)):
+        name, wire_name, record_type, _, display = plain.direct_record_fixture(kind, ipv6_ptr)
+
+        def handler(server, stream, request):
+            """按实际加密传输返回独立构造的对应类型记录。"""
+            response = plain.direct_response(request["body"], kind, ipv6_ptr)
+            if transport == "doh":
+                send_http(stream, response)
+            else:
+                stream.sendall(struct.pack("!H", len(response)) + response)
+
+        with TlsServer(transport, handler) as server:
+            result = invoke(server, query_type=kind.lower(), name=name)
+            check_success(result, transport)
+        check_request(server, record_type, wire_name)
+        plain.check_direct_output(result, kind, name, display, transport)
+
+
+@case
+def doh_direct_cname():
+    """验证 DoH 直接 CNAME 查询的请求类型和名称回答。"""
+    check_encrypted_direct_type("doh", "CNAME")
+
+
+@case
+def doh_direct_mx():
+    """验证 DoH 直接 MX 查询保留优先级与交换名称。"""
+    check_encrypted_direct_type("doh", "MX")
+
+
+@case
+def doh_direct_txt():
+    """验证 DoH TXT 回答的原始分段与终端安全转义。"""
+    check_encrypted_direct_type("doh", "TXT")
+
+
+@case
+def doh_direct_ns():
+    """验证 DoH 直接 NS 查询正确使用类型二。"""
+    check_encrypted_direct_type("doh", "NS")
+
+
+@case
+def doh_direct_soa():
+    """验证 DoH SOA 回答的完整名称和数值字段。"""
+    check_encrypted_direct_type("doh", "SOA")
+
+
+@case
+def doh_direct_ptr():
+    """验证 DoH PTR 查询保留显式 IPv4 与 IPv6 反向名称。"""
+    check_encrypted_direct_type("doh", "PTR")
+
+
+@case
+def dot_direct_cname():
+    """验证 DoT 直接 CNAME 查询的请求类型和名称回答。"""
+    check_encrypted_direct_type("dot", "CNAME")
+
+
+@case
+def dot_direct_mx():
+    """验证 DoT 直接 MX 查询保留优先级与交换名称。"""
+    check_encrypted_direct_type("dot", "MX")
+
+
+@case
+def dot_direct_txt():
+    """验证 DoT TXT 回答的原始分段与终端安全转义。"""
+    check_encrypted_direct_type("dot", "TXT")
+
+
+@case
+def dot_direct_ns():
+    """验证 DoT 直接 NS 查询正确使用类型二。"""
+    check_encrypted_direct_type("dot", "NS")
+
+
+@case
+def dot_direct_soa():
+    """验证 DoT SOA 回答的完整名称和数值字段。"""
+    check_encrypted_direct_type("dot", "SOA")
+
+
+@case
+def dot_direct_ptr():
+    """验证 DoT PTR 查询保留显式 IPv4 与 IPv6 反向名称。"""
+    check_encrypted_direct_type("dot", "PTR")
 
 
 @case

@@ -1,4 +1,5 @@
 #include "dns/wire_codec.hpp"
+#include "dns/record_types.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -7,6 +8,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -44,9 +46,11 @@ TEST_CASE("查询编码匹配 example.com 的 A 查询基准报文",
     check_bytes(*result, example_a_query());
 }
 
-TEST_CASE("A 和 AAAA 查询遵守两种递归标志状态",
+TEST_CASE("八种直接查询类型遵守两种递归标志状态",
           "[query_encoder]") {
-    for (const auto type : {std::uint16_t{1}, std::uint16_t{28}}) {
+    for (const auto type : {std::uint16_t{1}, std::uint16_t{28}, std::uint16_t{5},
+                            std::uint16_t{15}, std::uint16_t{16}, std::uint16_t{2},
+                            std::uint16_t{6}, std::uint16_t{12}}) {
         for (const bool recursion_desired : {false, true}) {
             CAPTURE(type, recursion_desired);
             const DnsQuestion question{DnsName{{"example", "com"}}, type, 1};
@@ -55,7 +59,7 @@ TEST_CASE("A 和 AAAA 查询遵守两种递归标志状态",
 
             auto expected = example_a_query();
             expected[2] = recursion_desired ? std::byte{0x01} : std::byte{0x00};
-            expected[26] = type == 1 ? std::byte{0x01} : std::byte{0x1C};
+            expected[26] = static_cast<std::byte>(type);
             check_bytes(*result, expected);
         }
     }
@@ -180,7 +184,7 @@ TEST_CASE("查询名称错误先于类型和类别检查并保留标签索引",
 
     for (const auto& sample : samples) {
         CAPTURE(sample.label_index);
-        const DnsQuestion question{sample.name, 5, 3};
+        const DnsQuestion question{sample.name, 255, 3};
         const auto result = encode_query(question, 0x1234);
         REQUIRE_FALSE(result.has_value());
         CHECK(result.error().code == sample.code);
@@ -190,8 +194,8 @@ TEST_CASE("查询名称错误先于类型和类别检查并保留标签索引",
 
 TEST_CASE("不支持的查询类型先于查询类别检查报错",
           "[query_encoder]") {
-    for (const auto type : {std::uint16_t{0}, std::uint16_t{5},
-                            std::uint16_t{255}, std::uint16_t{65535}}) {
+    for (const auto type : {std::uint16_t{0}, std::uint16_t{10}, std::uint16_t{41},
+                            std::uint16_t{252}, std::uint16_t{255}, std::uint16_t{65535}}) {
         for (const auto qclass : {std::uint16_t{1}, std::uint16_t{3}}) {
             CAPTURE(type, qclass);
             const DnsQuestion question{DnsName{{"example", "com"}}, type, qclass};
@@ -205,7 +209,9 @@ TEST_CASE("不支持的查询类型先于查询类别检查报错",
 
 TEST_CASE("查询编码仅接受 IN 类别",
           "[query_encoder]") {
-    for (const auto type : {std::uint16_t{1}, std::uint16_t{28}}) {
+    for (const auto type : {std::uint16_t{1}, std::uint16_t{28}, std::uint16_t{5},
+                            std::uint16_t{15}, std::uint16_t{16}, std::uint16_t{2},
+                            std::uint16_t{6}, std::uint16_t{12}}) {
         for (const auto qclass : {std::uint16_t{0}, std::uint16_t{3},
                                   std::uint16_t{255}, std::uint16_t{65535}}) {
             CAPTURE(type, qclass);
@@ -215,6 +221,50 @@ TEST_CASE("查询编码仅接受 IN 类别",
             CHECK(result.error().code == DnsEncodeErrorCode::UnsupportedQueryClass);
             CHECK(result.error().label_index == 0);
         }
+    }
+}
+
+TEST_CASE("查询类型文本仅接受八种名称并忽略 ASCII 大小写",
+          "[query_encoder][query_types]") {
+    struct Sample {
+        std::string_view text;
+        std::string_view canonical;
+        std::uint16_t type;
+    };
+    constexpr std::array samples{
+        Sample{"a", "A", 1}, Sample{"AaAa", "AAAA", 28},
+        Sample{"cNaMe", "CNAME", 5}, Sample{"mX", "MX", 15},
+        Sample{"tXt", "TXT", 16}, Sample{"nS", "NS", 2},
+        Sample{"sOa", "SOA", 6}, Sample{"pTr", "PTR", 12},
+    };
+    for (const auto& sample : samples) {
+        CAPTURE(sample.text);
+        CHECK(query_type_from_text(sample.text) == sample.type);
+        CHECK(query_type_from_text(sample.canonical) == sample.type);
+        CHECK(is_supported_query_type(sample.type));
+        CHECK(query_type_name(sample.type) == sample.canonical);
+    }
+    CHECK(query_type_choices == "A|AAAA|CNAME|MX|TXT|NS|SOA|PTR");
+}
+
+TEST_CASE("查询类型文本拒绝传送通配编号空白及隐藏字符",
+          "[query_encoder][query_types]") {
+    const std::array invalid{
+        std::string_view{""}, std::string_view{"ANY"}, std::string_view{"AXFR"},
+        std::string_view{"IXFR"}, std::string_view{"1"}, std::string_view{"28"},
+        std::string_view{"TYPE1"}, std::string_view{"TYPE15"}, std::string_view{"A "},
+        std::string_view{" A"}, std::string_view{"TXT\n"}, std::string_view{"MX\0", 3},
+        std::string_view{"\xff"},
+    };
+    for (const auto text : invalid) {
+        CAPTURE(text);
+        CHECK_FALSE(query_type_from_text(text).has_value());
+    }
+    for (const auto type : {std::uint16_t{0}, std::uint16_t{10}, std::uint16_t{41},
+                            std::uint16_t{252}, std::uint16_t{255}, std::uint16_t{65535}}) {
+        CAPTURE(type);
+        CHECK_FALSE(is_supported_query_type(type));
+        CHECK(query_type_name(type).empty());
     }
 }
 

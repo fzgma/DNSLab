@@ -4,11 +4,11 @@
 
 DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与耗时，帮助学习 DNS 协议和排查解析问题。
 
-当前开发代码支持单服务器 **UDP、TCP、DoH 和 DoT 查询**，以及多个普通 DNS 服务器的 **compare 比较**。JSON 报告仍待实现。`v0.1.0` 标签提供单服务器查询，比较功能请从当前源码构建。后续任务见[待办](docs/todo.md)。
+当前开发代码支持单服务器 **UDP、TCP、DoH 和 DoT 查询**，以及多个普通 DNS 服务器的 **compare 比较**。JSON 报告仍待实现。`v0.1.0` 标签仅支持单服务器 A/AAAA 查询；比较和新增记录类型请从当前源码构建。后续任务见[待办](docs/todo.md)。
 
 ## 1. 功能
 
-- **域名查询**：查询 A、AAAA，展示响应码、TTL、A/AAAA/CNAME 和各组记录。
+- **域名查询**：直接查询 A、AAAA、CNAME、MX、TXT、NS、SOA、PTR，展示响应码、TTL 和各组记录；MX、TXT、SOA 按字段显示。
 - **UDP 与 TCP**：支持显式选择传输，默认在有效 UDP 截断响应后回退 TCP。
 - **DoH 与 DoT**：直接指定 HTTPS 地址或 TLS 服务器，严格校验证书和服务器身份，可指定私有 CA。
 - **服务器比较**：依次查询多个不同 IP 端点，保留各自结果并展示响应差异；单台失败不取消后续查询。
@@ -36,6 +36,9 @@ DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与�
 .\build-mingw-debug\dnslab.exe query example.com --doh https://cloudflare-dns.com/dns-query
 .\build-mingw-debug\dnslab.exe query example.com --dot dns.google --type AAAA
 .\build-mingw-debug\dnslab.exe compare example.com -s 1.1.1.1 -s 8.8.8.8
+.\build-mingw-debug\dnslab.exe query example.com -s 1.1.1.1 -t MX
+.\build-mingw-debug\dnslab.exe query example.com -s 1.1.1.1 -t TXT
+.\build-mingw-debug\dnslab.exe query 1.2.0.192.in-addr.arpa -s 1.1.1.1 -t PTR
 ```
 
 如果使用 MSVC 预设，运行 `build-msvc-debug/dnslab.exe`。VS Code 的工具链与独立构建目录配置见[构建说明](docs/build.md#vs-code)。
@@ -71,7 +74,7 @@ DNSLab 0.1.0
 | `--server <endpoint>` | `-s` | 指定普通 DNS 的 IP 端点 |
 | `--doh <HTTPS URL>` | — | 指定 DoH 地址 |
 | `--dot <host[:port]>` | — | 指定 DoT 服务器 |
-| `--type A\|AAAA` | `-t` | 查询记录类型 |
+| `--type <类型>` | `-t` | 查询记录类型；支持范围见功能列表 |
 | `--transport auto\|udp\|tcp` | `-T` | 普通 DNS 的传输方式 |
 | `--timeout-ms <n>` | — | 查询总预算 |
 | `--ca-file <path>` | — | 加密查询使用指定 CA 文件 |
@@ -122,7 +125,8 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装、VS Code �
 
 ## 6. 限制
 
-- JSON 报告仍待实现；暂不支持加密服务器比较、其他查询类型、DNSSEC 验证和 IDN 自动转换。
+- JSON 报告仍待实现；暂不支持加密服务器比较、ANY/AXFR、任意类型编号、DNSSEC 验证和 IDN 自动转换。
+- 进行 PTR 反向查询时，需自行提供 `in-addr.arpa` 或 `ip6.arpa` 名称；程序不自动反转 IP，CNAME 直接查询不自动追踪目标。查询名称仍遵守现有字符规则，不接受下划线。
 - 比较按输入顺序逐台执行，每台有独立预算，总耗时可能超过单台超时；差异仅供观察，不代表答案正确性或服务器排名。
 - DoH 使用 POST；DoT 不协商自定义 `dot` ALPN。加密连接失败不回退明文，也不使用代理环境变量。
 - 查询会发送给指定服务器；加密服务器名称的初次解析可能使用本机配置的普通 DNS。

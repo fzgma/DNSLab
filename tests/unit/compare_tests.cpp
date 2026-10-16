@@ -1,4 +1,6 @@
 #include "app/compare.hpp"
+#include "dns/byte_utils.hpp"
+#include "dns/wire_codec.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -42,6 +44,25 @@ app::CompareEntry success(dns::DnsMessage message) {
     return {endpoint(), app::QueryResult{
         endpoint(), question(), message.header.id, app::QueryTransport::Udp,
         std::move(message), 12ms, 0, {}}};
+}
+
+/// 构造带一个回答的完整响应，让比较用例覆盖解析前不同的名称压缩布局。
+dns::Packet packet_with_answer(std::uint16_t type, const dns::Packet& rdata) {
+    auto request = question();
+    request.type = type;
+    auto encoded = dns::encode_query(request, 123);
+    REQUIRE(encoded.has_value());
+    auto packet = std::move(*encoded);
+    packet[2] = std::byte{0x81};
+    packet[3] = std::byte{0x80};
+    packet[7] = std::byte{1};
+    dns::append_u16_be(packet, 0xc00c);
+    dns::append_u16_be(packet, type);
+    dns::append_u16_be(packet, 1);
+    dns::append_u32_be(packet, 60);
+    dns::append_u16_be(packet, static_cast<std::uint16_t>(rdata.size()));
+    packet.insert(packet.end(), rdata.begin(), rdata.end());
+    return packet;
 }
 
 TEST_CASE("响应比较忽略事务 ID、记录顺序和名称 ASCII 大小写", "[compare][difference]") {
@@ -210,6 +231,158 @@ TEST_CASE("响应比较完整比较 AAAA 地址并区分 CNAME 目标", "[compar
     CHECK(app::compare_responses(first, second).answers);
 }
 
+TEST_CASE("响应比较忽略五种名称记录的压缩布局及 ASCII 大小写", "[compare][difference]") {
+    const dns::Packet compressed_name{std::byte{0xc0}, std::byte{12}};
+    const dns::Packet expanded_name{
+        std::byte{7}, std::byte{'E'}, std::byte{'X'}, std::byte{'A'}, std::byte{'M'},
+        std::byte{'P'}, std::byte{'L'}, std::byte{'E'}, std::byte{3}, std::byte{'C'},
+        std::byte{'O'}, std::byte{'M'}, std::byte{0}};
+    for (const auto type : std::array<std::uint16_t, 5>{2, 5, 6, 12, 15}) {
+        CAPTURE(type);
+        dns::Packet compressed;
+        dns::Packet expanded;
+        if (type == 15) {
+            dns::append_u16_be(compressed, 65535);
+            dns::append_u16_be(expanded, 65535);
+        }
+        compressed.insert(compressed.end(), compressed_name.begin(), compressed_name.end());
+        expanded.insert(expanded.end(), expanded_name.begin(), expanded_name.end());
+        if (type == 6) {
+            compressed.insert(compressed.end(), compressed_name.begin(), compressed_name.end());
+            expanded.insert(expanded.end(), expanded_name.begin(), expanded_name.end());
+            for (const auto value : {0xffffffffU, 0x80000000U, 600U, 86400U, 0U}) {
+                dns::append_u32_be(compressed, value);
+                dns::append_u32_be(expanded, value);
+            }
+        }
+        const auto first = dns::parse_message(packet_with_answer(type, compressed));
+        const auto second = dns::parse_message(packet_with_answer(type, expanded));
+        REQUIRE(first.has_value());
+        REQUIRE(second.has_value());
+        CHECK_FALSE(app::compare_responses(*first, *second).any());
+        CHECK_FALSE(app::compare_responses(*second, *first).any());
+    }
+}
+
+TEST_CASE("响应比较保留 NS 和 PTR 目标的标签边界", "[compare][difference]") {
+    for (const auto type : std::array<std::uint16_t, 2>{2, 12}) {
+        CAPTURE(type);
+        auto first = response();
+        first.answers = {{question().name, type, 1, 60,
+            dns::NameData{dns::DnsName{{"ab", "c"}}}}};
+        auto second = first;
+        std::get<dns::NameData>(second.answers.front().rdata).name.labels = {"a", "bc"};
+        const auto differences = app::compare_responses(first, second);
+        CHECK(differences.answers);
+        CHECK_FALSE(differences.ttl);
+    }
+}
+
+TEST_CASE("响应比较独立保留 MX 优先级和交换机名称", "[compare][difference]") {
+    auto first = response();
+    first.answers = {{question().name, 15, 1, 60,
+        dns::MxData{65535, dns::DnsName{{"Mail", "Example"}}}}};
+    auto second = first;
+    std::get<dns::MxData>(second.answers.front().rdata).exchange.labels = {"MAIL", "EXAMPLE"};
+    CHECK_FALSE(app::compare_responses(first, second).any());
+    std::get<dns::MxData>(second.answers.front().rdata).preference = 0;
+    auto differences = app::compare_responses(first, second);
+    CHECK(differences.answers);
+    CHECK_FALSE(differences.ttl);
+    second = first;
+    std::get<dns::MxData>(second.answers.front().rdata).exchange.labels = {"Other", "Example"};
+    differences = app::compare_responses(first, second);
+    CHECK(differences.answers);
+    CHECK_FALSE(differences.ttl);
+    first.answers.front().rdata = dns::MxData{10, dns::DnsName{{"ab", "c"}}};
+    second = first;
+    std::get<dns::MxData>(second.answers.front().rdata).exchange.labels = {"a", "bc"};
+    CHECK(app::compare_responses(first, second).answers);
+}
+
+TEST_CASE("响应比较逐项保留 SOA 两个名称和五个无符号数值", "[compare][difference]") {
+    auto first = response();
+    first.answers = {{question().name, 6, 1, 60,
+        dns::SoaData{dns::DnsName{{"Ns", "Example"}}, dns::DnsName{{"Admin", "Example"}},
+                     0xffffffffU, 0x80000000U, 600, 86400, 0}}};
+    auto second = first;
+    auto& case_variant = std::get<dns::SoaData>(second.answers.front().rdata);
+    case_variant.mname.labels = {"NS", "EXAMPLE"};
+    case_variant.rname.labels = {"ADMIN", "EXAMPLE"};
+    CHECK_FALSE(app::compare_responses(first, second).any());
+    for (const auto field : {&dns::SoaData::mname, &dns::SoaData::rname}) {
+        second = first;
+        (std::get<dns::SoaData>(second.answers.front().rdata).*field).labels = {"Other", "Example"};
+        const auto differences = app::compare_responses(first, second);
+        CHECK(differences.answers);
+        CHECK_FALSE(differences.ttl);
+    }
+    for (const auto field : {&dns::SoaData::serial, &dns::SoaData::refresh, &dns::SoaData::retry,
+                             &dns::SoaData::expire, &dns::SoaData::minimum}) {
+        second = first;
+        (std::get<dns::SoaData>(second.answers.front().rdata).*field) ^= 1U;
+        const auto differences = app::compare_responses(first, second);
+        CHECK(differences.answers);
+        CHECK_FALSE(differences.ttl);
+    }
+}
+
+TEST_CASE("响应比较保留 TXT 大小写、分段、空段及全部字节", "[compare][difference]") {
+    auto first = response();
+    first.answers = {{question().name, 16, 1, 60,
+        dns::TxtData{{{std::byte{'A'}, std::byte{'b'}}, {}, {std::byte{'c'}},
+                      {std::byte{0}, std::byte{255}}}}}};
+    const auto original = std::get<dns::TxtData>(first.answers.front().rdata).strings;
+    for (const auto mutation : {0, 1, 2, 3, 4, 5}) {
+        CAPTURE(mutation);
+        auto second = first;
+        auto& strings = std::get<dns::TxtData>(second.answers.front().rdata).strings;
+        switch (mutation) {
+        case 0: strings[0][0] = std::byte{'a'}; break;
+        case 1:
+            strings = {{std::byte{'A'}}, {}, {std::byte{'b'}, std::byte{'c'}}, original.back()};
+            break;
+        case 2: strings.erase(strings.begin() + 1); break;
+        case 3: std::swap(strings[0], strings[2]); break;
+        case 4: strings.back().back() = std::byte{254}; break;
+        case 5: strings.back().push_back(std::byte{0}); break;
+        }
+        const auto differences = app::compare_responses(first, second);
+        CHECK(differences.answers);
+        CHECK_FALSE(differences.ttl);
+        CHECK(app::compare_responses(second, first).answers);
+    }
+}
+
+TEST_CASE("新增记录类型沿用重复数量和独立 TTL 比较规则", "[compare][ttl]") {
+    const std::array records{
+        dns::ResourceRecord{question().name, 15, 1, 60,
+            dns::MxData{10, dns::DnsName{{"mail", "example"}}}},
+        dns::ResourceRecord{question().name, 16, 1, 60,
+            dns::TxtData{{{}, {std::byte{'A'}}}}},
+        dns::ResourceRecord{question().name, 6, 1, 60,
+            dns::SoaData{dns::DnsName{{"ns", "example"}}, dns::DnsName{{"admin", "example"}},
+                         1, 3600, 600, 86400, 60}}};
+    for (const auto& record : records) {
+        CAPTURE(record.type);
+        auto first = response();
+        first.answers = {record, record};
+        first.answers.back().ttl = 120;
+        auto second = first;
+        std::ranges::reverse(second.answers);
+        CHECK_FALSE(app::compare_responses(first, second).any());
+        second.answers.pop_back();
+        auto differences = app::compare_responses(first, second);
+        CHECK(differences.answers);
+        CHECK_FALSE(differences.ttl);
+        second = first;
+        second.answers.back().ttl = 60;
+        differences = app::compare_responses(first, second);
+        CHECK_FALSE(differences.answers);
+        CHECK(differences.ttl);
+    }
+}
+
 TEST_CASE("失败条目不可比较而有效空答案仍可比较", "[compare][difference]") {
     auto empty = response();
     empty.answers.clear();
@@ -272,7 +445,7 @@ TEST_CASE("比较预检独立校验问题并保留编码错误详情", "[compare
     CHECK(result.error().encode_error->code == dns::DnsEncodeErrorCode::EmptyLabel);
     CHECK(result.error().encode_error->label_index == 2);
     invalid = question();
-    invalid.type = 15;
+    invalid.type = 255;
     result = app::compare_servers(invalid, servers);
     REQUIRE_FALSE(result.has_value());
     REQUIRE(result.error().encode_error.has_value());

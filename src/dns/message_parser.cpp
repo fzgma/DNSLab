@@ -50,6 +50,77 @@ parse_question(std::span<const std::byte> packet, std::size_t& cursor) {
     return DnsQuestion{std::move(name->name), *type, *qclass};
 }
 
+/// 展开嵌入 RDATA 的名称，只有原编码完整落在该字段内才推进局部游标。
+std::expected<DnsName, DnsParseError>
+read_rdata_name(std::span<const std::byte> packet, std::size_t& cursor,
+                std::size_t rdata_end, std::size_t rdata_start) {
+    // 压缩目标以整个报文为基准；解码错误保留原偏移，成功后单独约束原路径长度。
+    auto decoded = decode_name(packet, cursor);
+    if (!decoded) {
+        return std::unexpected(decoded.error());
+    }
+    if (decoded->consumed > rdata_end - cursor) {
+        return std::unexpected(DnsParseError{
+            DnsParseErrorCode::RdataLengthMismatch, rdata_start});
+    }
+    cursor += decoded->consumed;
+    return std::move(decoded->name);
+}
+
+/// 按字符字符串的长度字节拆分 TXT，保留空段、分段边界和任意原始字节。
+std::expected<TxtData, DnsParseError>
+parse_txt(std::span<const std::byte> bytes, std::size_t rdata_start,
+           std::size_t rdlength_offset) {
+    if (bytes.empty()) {
+        return std::unexpected(DnsParseError{
+            DnsParseErrorCode::InvalidRdataLength, rdlength_offset});
+    }
+    TxtData result;
+    std::size_t cursor = 0;
+    while (cursor < bytes.size()) {
+        const auto length = std::to_integer<unsigned char>(bytes[cursor++]);
+        if (length > bytes.size() - cursor) {
+            return std::unexpected(DnsParseError{
+                DnsParseErrorCode::RdataLengthMismatch, rdata_start});
+        }
+        const auto string_bytes = bytes.subspan(cursor, length);
+        result.strings.emplace_back(string_bytes.begin(), string_bytes.end());
+        cursor += length;
+    }
+    return result;
+}
+
+/// 解析 SOA 的两个可压缩名称与五个完整大端整数，拒绝借用后续记录字节。
+std::expected<SoaData, DnsParseError>
+parse_soa(std::span<const std::byte> packet, std::size_t rdata_start,
+           std::size_t rdata_end, std::size_t rdlength_offset) {
+    auto cursor = rdata_start;
+    auto mname = read_rdata_name(packet, cursor, rdata_end, rdata_start);
+    if (!mname) {
+        return std::unexpected(mname.error());
+    }
+    auto rname = read_rdata_name(packet, cursor, rdata_end, rdata_start);
+    if (!rname) {
+        return std::unexpected(rname.error());
+    }
+    constexpr std::size_t integer_bytes = 5 * sizeof(std::uint32_t);
+    if (rdata_end - cursor < integer_bytes) {
+        return std::unexpected(DnsParseError{
+            DnsParseErrorCode::InvalidRdataLength, rdlength_offset});
+    }
+    if (rdata_end - cursor > integer_bytes) {
+        return std::unexpected(DnsParseError{
+            DnsParseErrorCode::RdataLengthMismatch, rdata_start});
+    }
+    SoaData result{std::move(*mname), std::move(*rname)};
+    // 尾部长度已经精确核对，五次定长读取均位于本条 RDATA 内。
+    for (auto* field : {&result.serial, &result.refresh, &result.retry,
+                        &result.expire, &result.minimum}) {
+        *field = *read_next_u32(packet, cursor);
+    }
+    return result;
+}
+
 /// 解析一条资源记录，并按类型和类别解码或保留原始 RDATA。
 std::expected<ResourceRecord, DnsParseError>
 parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
@@ -101,17 +172,45 @@ parse_record(std::span<const std::byte> packet, std::size_t& cursor) {
         AaaaData address{};
         std::copy(bytes.begin(), bytes.end(), address.address.begin());
         rdata = address;
-    } else if (*type == 5) {
-        // CNAME 可跨字段引用名称，但原路径消费长度必须与 RDLENGTH 完全相同。
-        auto name = decode_name(packet, rdata_start);
+    } else if (*type == 2 || *type == 5 || *type == 12) {
+        auto name_cursor = rdata_start;
+        auto name = read_rdata_name(packet, name_cursor, rdata_start + *rdlength, rdata_start);
         if (!name) {
             return std::unexpected(name.error());
         }
-        if (name->consumed != *rdlength) {
+        if (name_cursor != rdata_start + *rdlength) {
             return std::unexpected(DnsParseError{
                 DnsParseErrorCode::RdataLengthMismatch, rdata_start});
         }
-        rdata = NameData{std::move(name->name)};
+        rdata = NameData{std::move(*name)};
+    } else if (*type == 15) {
+        if (bytes.size() < 2) {
+            return std::unexpected(DnsParseError{
+                DnsParseErrorCode::InvalidRdataLength, rdlength_offset});
+        }
+        auto name_cursor = rdata_start + 2;
+        auto exchange = read_rdata_name(packet, name_cursor,
+                                        rdata_start + *rdlength, rdata_start);
+        if (!exchange) {
+            return std::unexpected(exchange.error());
+        }
+        if (name_cursor != rdata_start + *rdlength) {
+            return std::unexpected(DnsParseError{
+                DnsParseErrorCode::RdataLengthMismatch, rdata_start});
+        }
+        rdata = MxData{*read_u16_be(bytes, 0), std::move(*exchange)};
+    } else if (*type == 16) {
+        auto text = parse_txt(bytes, rdata_start, rdlength_offset);
+        if (!text) {
+            return std::unexpected(text.error());
+        }
+        rdata = std::move(*text);
+    } else if (*type == 6) {
+        auto soa = parse_soa(packet, rdata_start, rdata_start + *rdlength, rdlength_offset);
+        if (!soa) {
+            return std::unexpected(soa.error());
+        }
+        rdata = std::move(*soa);
     } else {
         rdata = OpaqueData{Packet{bytes.begin(), bytes.end()}};
     }

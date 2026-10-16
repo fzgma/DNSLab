@@ -97,7 +97,27 @@ struct OpaqueData {
     Packet bytes;
 };
 
-using RData = std::variant<AData, AaaaData, NameData, OpaqueData>;
+struct MxData {
+    std::uint16_t preference{};
+    DnsName exchange;
+};
+
+struct TxtData {
+    // 保留每个字符字符串的边界；空字符串与任意非文本字节均有效。
+    std::vector<Packet> strings;
+};
+
+struct SoaData {
+    DnsName mname;
+    DnsName rname;
+    std::uint32_t serial{};
+    std::uint32_t refresh{};
+    std::uint32_t retry{};
+    std::uint32_t expire{};
+    std::uint32_t minimum{};
+};
+
+using RData = std::variant<AData, AaaaData, NameData, OpaqueData, MxData, TxtData, SoaData>;
 
 struct ResourceRecord {
     DnsName owner;

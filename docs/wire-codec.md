@@ -64,7 +64,16 @@
 | `ResourceRecord` | owner、原始类型、class、32 位 TTL 和 RDATA |
 | `DnsMessage` | Header 及 Question、Answer、Authority、Additional 四个独立集合 |
 
-`RData` 是 `AData`、`AaaaData`、`NameData`、`OpaqueData` 的 `std::variant`。前两者的 `address` 分别保存 4 字节和 16 字节地址，后两者用 `name`、`bytes` 保存 CNAME 名称和不透明字节。未知类型、class 和 flags 位原样保留。
+`RData` 是以下结构的 `std::variant`，未知类型、class 和 flags 位原样保留：
+
+| 结构 | 数据 |
+| --- | --- |
+| `AData`、`AaaaData` | `address` 保存 4 字节或 16 字节地址 |
+| `NameData` | `name` 保存 NS、CNAME、PTR 的目标名称 |
+| `MxData` | `preference` 和 `exchange` 保存优先级与交换机名称 |
+| `TxtData` | `strings` 保存各段原始字节，不合并、不假设 UTF-8 |
+| `SoaData` | `mname`、`rname` 及 `serial`、`refresh`、`retry`、`expire`、`minimum` |
+| `OpaqueData` | `bytes` 保存未知类型及非 IN 的 A/AAAA 原始数据；已知类型的畸形数据报错，不转为不透明数据 |
 
 `DnsMessage` 的集合成员为 `questions`、`answers`、`authority`、`additional`，不把附加记录混入应答；问题的 class 字段为 `qclass`，记录的 class 字段为 `rr_class`。
 
@@ -99,14 +108,17 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
 | --- | --- |
 | A（1），IN（1） | RDLENGTH 必须为 4，否则 `InvalidRdataLength` |
 | AAAA（28），IN（1） | RDLENGTH 必须为 16，否则 `InvalidRdataLength` |
-| CNAME（5），任意 class | 在整个报文中从 RDATA 起点解码名称，`consumed` 必须等于 RDLENGTH，否则 `RdataLengthMismatch` |
+| NS（2）、CNAME（5）、PTR（12），任意 class | 在整个报文中解码一个名称，原路径消费长度必须等于 RDLENGTH |
+| MX（15），任意 class | 读取大端 16 位优先级，再解码一个交换机名称，必须恰好消费 RDATA；根名称是合法目标 |
+| TXT（16），任意 class | 至少一个长度前缀字符串，每段由一字节长度和对应字节组成；空段合法，零 RDLENGTH 或段长度越界非法 |
+| SOA（6），任意 class | 依次解码两个名称，再读取五个大端 32 位无符号整数，必须恰好消费 RDATA |
 | 其他类型，或不支持的 A/AAAA class | 保存不透明原始字节，不猜测结构 |
 
-压缩名称的目标始终以整个报文为基准，不能以 RDATA 子视图为基准。CNAME 的 RDLENGTH 计算压缩后的实际字节数，而非展开后的名称长度。
+名称和字段布局遵循 [RFC 1035 第 3.3 节](https://www.rfc-editor.org/rfc/rfc1035.html#section-3.3)。压缩名称的目标始终以整个报文为基准，不能以 RDATA 子视图为基准；原路径消费不得超过所属 RDATA。RDLENGTH 计算压缩后的实际字节数，而非展开后的名称长度。TXT 保留大小写、空段、分段边界与非文本字节，终端转义规则见 [CLI](cli.md#输出与退出码)。
 
 ### 查询编码
 
-`encode_query` 仅编码一个 A 或 AAAA、IN class 的问题。事务 ID 由调用方提供；查询编码器不负责随机数。
+`encode_query` 仅编码一个 `IN` class 的问题，允许 A、AAAA、CNAME、MX、TXT、NS、SOA、PTR。支持表由 `record_types.hpp` 统一维护，命令行与编码器共用；不接受其他类型或查询类别。事务 ID 由调用方提供；查询编码器不负责随机数。
 
 Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD 按参数设置。QDCOUNT 为 1，其余计数为 0。QNAME 不压缩，后接大端 QTYPE 和 QCLASS；不附加 EDNS 记录。
 
@@ -118,7 +130,7 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 
 名称编码错误包含 `code` 和 `label_index`：`EmptyLabel`、`LabelTooLong`、`NameTooLong` 指向首个错误标签或使总长度超限的标签。
 
-查询编码的 `UnsupportedQueryType` 和 `UnsupportedQueryClass` 分别表示查询类型不是 A/AAAA 或 class 不是 IN；这两种错误的 `label_index` 固定为 0，不表示名称出错。
+查询编码的 `UnsupportedQueryType` 和 `UnsupportedQueryClass` 分别表示查询类型不在支持表内或 class 不是 IN；这两种错误的 `label_index` 固定为 0，不表示名称出错。
 
 解析错误包含稳定 `code` 和相对于整个报文的字节 `offset`，不携带动态说明文本。
 
@@ -135,16 +147,16 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 | `CompressionPointerNotBackward` | 非向后引用的指针首字节 |
 | `CompressionLoop` | 重复访问的位置 |
 | `ExpandedNameTooLong` | 使展开长度超限的标签起点 |
-| `InvalidRdataLength` | IN A/AAAA 记录的 RDLENGTH 字段起点 |
-| `RdataLengthMismatch` | CNAME 的 RDATA 起点 |
+| `InvalidRdataLength` | 固定字段缺失、地址长度错误或 TXT 无任何字符串时的 RDLENGTH 字段起点 |
+| `RdataLengthMismatch` | 名称或 TXT 段越过自身 RDATA、结构化数据未恰好消费字段时的 RDATA 起点 |
 | `TrailingData` | 完成所有集合后第一个多余字节的位置 |
 
-记录先验证 RDATA 是否完整位于报文内，再验证具体类型的长度。CNAME 名称解码失败时保留名称错误；解码成功但占用长度不符时返回 `RdataLengthMismatch`。网络错误与 DNS RCODE 使用独立模型。
+记录先验证 RDATA 是否完整位于报文内，再验证具体类型的长度。名称解码失败时保留名称错误；解码成功但占用长度不符时返回 `RdataLengthMismatch`。网络错误与 DNS RCODE 使用独立模型。
 
 ## 验证要求
 
 名称测试覆盖黄金字节、根名称、63/64 与 255/256 边界、每处截断、非零和极大偏移、原始字节保留、安全显示及大小写比较。压缩测试覆盖独立指针、标签加指针、多级引用、向后循环、最大目标、长合法链、实际消耗长度和展开长度。
 
-消息测试覆盖固定 ID 的查询黄金样本、RD 开关、A/AAAA/CNAME、压缩 RDATA、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
+消息测试覆盖各支持类型的查询黄金样本、RD 开关、结构化 RDATA、TXT 分段、压缩名称、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
 
 测试使用内存数据，不依赖公共 DNS；单元测试设置运行上限以暴露死循环。运行方式见[构建与测试](build.md)。

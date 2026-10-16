@@ -2,6 +2,7 @@
 
 #include "dns/byte_utils.hpp"
 #include "dns/name_codec.hpp"
+#include "dns/record_types.hpp"
 
 #include <cstdint>
 #include <expected>
@@ -16,7 +17,7 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
     if (!encoded_name) {
         return std::unexpected(encoded_name.error());
     }
-    if (question.type != 1 && question.type != 28) {
+    if (!is_supported_query_type(question.type)) {
         return std::unexpected(DnsEncodeError{
             DnsEncodeErrorCode::UnsupportedQueryType, 0});
     }

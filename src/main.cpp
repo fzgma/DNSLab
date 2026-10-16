@@ -5,6 +5,7 @@
 #include "app/query.hpp"
 #include "cli/output.hpp"
 #include "dns/name_codec.hpp"
+#include "dns/record_types.hpp"
 #include "net/deadline.hpp"
 #include "net/encrypted_transport.hpp"
 #include "net/endpoint.hpp"
@@ -35,16 +36,6 @@ int argument_error(std::string_view message) {
 /// 将带值选项限制为恰好一个值，并拒绝重复指定。
 CLI::Option* single_value(CLI::Option* option) {
     return option->expected(1)->multi_option_policy(CLI::MultiOptionPolicy::Throw);
-}
-
-/// 仅折叠 ASCII 小写字母，使记录类型不区分大小写。
-std::string ascii_upper(std::string text) {
-    for (auto& byte : text) {
-        if (byte >= 'a' && byte <= 'z') {
-            byte = static_cast<char>(byte - 'a' + 'A');
-        }
-    }
-    return text;
 }
 
 /// 为第三方解析错误提供稳定的中文原因，不直接暴露其英文提示。
@@ -206,7 +197,7 @@ int run(int argc, char* argv[]) {
     auto* dot_option = single_value(query->add_option(
         "--dot", dot_text, "DoT 服务器的主机名或 IP，默认端口为 853"))->type_name("主机[:端口]");
     single_value(query->add_option("-t,--type", type_text, "记录类型，不区分大小写"))
-        ->type_name("A|AAAA")->default_str("A");
+        ->type_name(std::string{dns::query_type_choices})->default_str("A");
     auto* transport_option = single_value(query->add_option(
         "-T,--transport", transport_text, "普通 DNS 的传输方式，仅与 --server 配合使用"))
         ->type_name("auto|udp|tcp")->default_str("auto");
@@ -228,7 +219,7 @@ int run(int argc, char* argv[]) {
         ->expected(1)->allow_extra_args(false)->multi_option_policy(CLI::MultiOptionPolicy::TakeAll)
         ->type_name("地址");
     single_value(compare->add_option("-t,--type", type_text, "记录类型，不区分大小写"))
-        ->type_name("A|AAAA")->default_str("A");
+        ->type_name(std::string{dns::query_type_choices})->default_str("A");
     single_value(compare->add_option("-T,--transport", transport_text, "每台服务器的普通 DNS 传输方式"))
         ->type_name("auto|udp|tcp")->default_str("auto");
     single_value(compare->add_option("--timeout-ms", timeout_text, "每台服务器独立的查询总预算，单位为毫秒"))
@@ -274,9 +265,9 @@ int run(int argc, char* argv[]) {
         }
     }
 
-    type_text = ascii_upper(std::move(type_text));
-    if (type_text != "A" && type_text != "AAAA") {
-        return argument_error("--type 只能为 A 或 AAAA。");
+    const auto query_type = dns::query_type_from_text(type_text);
+    if (!query_type) {
+        return argument_error(std::format("--type 只支持以下记录类型：{}。", dns::query_type_choices));
     }
     app::TransportMode mode;
     if (transport_text == "auto") {
@@ -298,7 +289,7 @@ int run(int argc, char* argv[]) {
                                            parsed_name.error().offset));
     }
     const dns::DnsQuestion question{
-        std::move(*parsed_name), static_cast<std::uint16_t>(type_text == "A" ? 1 : 28), 1};
+        std::move(*parsed_name), *query_type, 1};
 
     if (compare->parsed()) {
         return run_comparison(question, compare_servers, mode, *budget);

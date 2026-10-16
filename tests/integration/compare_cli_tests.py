@@ -43,9 +43,9 @@ def run_arguments(arguments, expected_code):
     return result
 
 
-def invoke(endpoints, *options, expected_code=0):
+def invoke(endpoints, *options, expected_code=0, name="example.com"):
     """以重复服务器选项运行比较，并检查逐台输出保持输入顺序。"""
-    arguments = ["example.com"]
+    arguments = [name]
     for index, endpoint in enumerate(endpoints):
         arguments.extend(("--server" if index % 2 == 0 else "-s", endpoint))
     result = run_arguments([*arguments, *options], expected_code)
@@ -59,7 +59,7 @@ def invoke(endpoints, *options, expected_code=0):
         last_position = position
         block = server_output(result, index, len(endpoints))
         plain.require(f"目标: {endpoint}\n" in block, block)
-        for field in ("传输:", "耗时:", "问题: example.com. IN", "尝试:"):
+        for field in ("传输:", "耗时:", f"问题: {name}. IN", "尝试:"):
             plain.require(field in block, f"服务器 {index} 缺少 {field}: {block}")
     return result
 
@@ -102,7 +102,8 @@ def a_response(query, address="192.0.2.10", ttl=60):
     return plain.response(query, [answer])
 
 
-def exchange_udp(replies, *options, expected_code=0, delays=None):
+def exchange_udp(replies, *options, expected_code=0, delays=None, record_type=1,
+                 name="example.com", wire_name=plain.QUESTION_NAME):
     """为多台 UDP 服务器执行一次比较，并验证各台仅收到一个有效查询。"""
     delays = delays or [0] * len(replies)
     requests = [[] for _ in replies]
@@ -118,20 +119,20 @@ def exchange_udp(replies, *options, expected_code=0, delays=None):
                     """接收一次请求并按场景发送响应，延迟仅用于验证超时预算。"""
                     query, sender = server.recvfrom(65535)
                     requests[index].append(query)
-                    plain.check_request(query)
+                    plain.check_request(query, record_type, wire_name)
                     if delay:
                         threading.Event().wait(delay)
                     server.sendto(reply(query), sender)
 
                 workers.enter_context(plain.worker(serve))
-            result = invoke(endpoints, *options, expected_code=expected_code)
+            result = invoke(endpoints, *options, expected_code=expected_code, name=name)
         for index, (server, reply) in enumerate(zip(servers, replies)):
             if reply is None:
                 readable, _, _ = select.select([server], [], [], 0)
                 plain.require(bool(readable), f"服务器 {index + 1} 未收到查询")
                 query, _ = server.recvfrom(65535)
                 requests[index].append(query)
-                plain.check_request(query)
+                plain.check_request(query, record_type, wire_name)
             plain.require(len(requests[index]) == 1, f"服务器 {index + 1} 查询次数错误")
         readable, _, _ = select.select(servers, [], [], 0)
         plain.require(not readable, "比较对同一 UDP 服务器重复发送了查询")
@@ -241,6 +242,95 @@ def compare_sections_and_flags():
             plain.require(expected in block, block)
     summary(result, 2, 2)
     check_difference(result, 2, "标志", "权威记录", "附加记录")
+
+
+@case
+def compare_direct_name_types_ignore_compression_and_case():
+    """验证直接名称类型只比较展开语义，不将压缩布局或名称大小写当作差异。"""
+    upper_data = {
+        "CNAME": b"\x05ALIAS\x07EXAMPLE\x03COM\x00",
+        "NS": b"\x02NS\x07EXAMPLE\x03COM\x00",
+        "PTR": b"\x04HOST\x07EXAMPLE\x03COM\x00",
+    }
+    for kind in ("CNAME", "NS", "PTR"):
+        name, wire_name, record_type, payload, _ = plain.direct_record_fixture(kind)
+
+        def first(query):
+            """返回名称黄金值，其中 CNAME 与 NS 使用问题区压缩指针。"""
+            return plain.response(query, [record(b"\xc0\x0c", record_type, payload)])
+
+        def second(query):
+            """以全大写且不压缩的名称返回同一条语义记录。"""
+            return plain.response(query, [record(wire_name.upper(), record_type, upper_data[kind])])
+
+        result, _ = exchange_udp([first, second], "-t", kind.lower(), record_type=record_type,
+                                 name=name, wire_name=wire_name)
+        text = summary(result, 2, 2)
+        plain.require("服务器 2: 与参照响应一致。" in text, text)
+        plain.require("的直接" not in result.stdout, result.stdout)
+
+
+@case
+def compare_mx_names_and_preference():
+    """验证 MX 名称的压缩及大小写等价，优先级数值变化仍单独构成回答差异。"""
+    _, _, record_type, payload, _ = plain.direct_record_fixture("MX")
+    alternatives = [
+        payload,
+        b"\x00\x0a\x04MAIL\x07EXAMPLE\x03COM\x00",
+        b"\x00\x14\x04mail\xc0\x0c",
+    ]
+    replies = [
+        lambda query, data=data: plain.response(query, [record(b"\xc0\x0c", record_type, data)])
+        for data in alternatives
+    ]
+    result, _ = exchange_udp(replies, "--type", "mX", record_type=record_type)
+    text = summary(result, 3, 3)
+    plain.require("服务器 2: 与参照响应一致。" in text, text)
+    plain.require("IN MX 10 mail.example.com." in server_output(result, 1, 3), result.stdout)
+    plain.require("IN MX 20 mail.example.com." in server_output(result, 3, 3), result.stdout)
+    check_difference(result, 3, "回答")
+
+
+@case
+def compare_soa_names_and_numbers():
+    """验证 SOA 两个名称的语义等价，最低缓存时间变化不会被名称规范化忽略。"""
+    _, _, record_type, payload, _ = plain.direct_record_fixture("SOA")
+    numbers = struct.pack("!IIIII", 2026010101, 3600, 600, 86400, 60)
+    alternatives = [
+        payload,
+        b"\x02NS\x07EXAMPLE\x03COM\x00\x0aHOSTMASTER\x07EXAMPLE\x03COM\x00" + numbers,
+        payload[:-4] + struct.pack("!I", 61),
+    ]
+    replies = [
+        lambda query, data=data: plain.response(query, [record(b"\xc0\x0c", record_type, data)])
+        for data in alternatives
+    ]
+    result, _ = exchange_udp(replies, "--type", "sOa", record_type=record_type)
+    text = summary(result, 3, 3)
+    plain.require("服务器 2: 与参照响应一致。" in text, text)
+    for index, minimum in ((1, 60), (3, 61)):
+        expected = f"IN SOA ns.example.com. hostmaster.example.com. 2026010101 3600 600 86400 {minimum}"
+        plain.require(expected in server_output(result, index, 3), result.stdout)
+    check_difference(result, 3, "回答")
+
+
+@case
+def compare_txt_segments_and_exact_bytes():
+    """验证 TXT 相同分段可比较为一致，拼接相同但分段不同或仅字节大小写不同仍有差异。"""
+    alternatives = [b"\x02ab\x00\x01c", b"\x02ab\x00\x01c",
+                    b"\x01a\x00\x02bc", b"\x02Ab\x00\x01c"]
+    replies = [
+        lambda query, data=data: plain.response(query, [record(b"\xc0\x0c", 16, data)])
+        for data in alternatives
+    ]
+    result, _ = exchange_udp(replies, "--type", "tXt", record_type=16)
+    text = summary(result, 4, 4)
+    plain.require("服务器 2: 与参照响应一致。" in text, text)
+    for index, expected in ((1, 'IN TXT "ab" "" "c"'), (3, 'IN TXT "a" "" "bc"'),
+                            (4, 'IN TXT "Ab" "" "c"')):
+        plain.require(expected in server_output(result, index, 4), result.stdout)
+    check_difference(result, 3, "回答")
+    check_difference(result, 4, "回答")
 
 
 @case
@@ -400,7 +490,7 @@ def compare_invalid_arguments_send_nothing():
             ("--unknown",), ("--doh", "https://localhost/dns-query"),
             ("--dot", "localhost"), ("--ca-file", "unused.pem"),
             ("--output", "unused.json"), ("--force",),
-            ("--type", "MX"), ("--transport", "UDP"), ("--timeout-ms", "99"),
+            ("--type", "ANY"), ("--type", "AXFR"), ("--transport", "UDP"), ("--timeout-ms", "99"),
             ("--type", "A", "-t", "A"), ("-T", "udp", "--transport", "udp"),
             ("--timeout-ms", "100", "--timeout-ms", "100"), ("--server",),
         ):

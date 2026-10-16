@@ -497,7 +497,7 @@ TEST_CASE("无效 UDP 查询输入在发包前失败",
     const std::array samples{
         Sample{dns::DnsQuestion{dns::DnsName{{"ok", ""}}, 1, 1},
                dns::DnsEncodeErrorCode::EmptyLabel, 1},
-        Sample{dns::DnsQuestion{dns::DnsName{{"example", "com"}}, 5, 1},
+        Sample{dns::DnsQuestion{dns::DnsName{{"example", "com"}}, 255, 1},
                dns::DnsEncodeErrorCode::UnsupportedQueryType, 0},
         Sample{dns::DnsQuestion{dns::DnsName{{"example", "com"}}, 1, 3},
                dns::DnsEncodeErrorCode::UnsupportedQueryClass, 0},

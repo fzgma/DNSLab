@@ -306,7 +306,9 @@ TEST_CASE("IN 地址记录拒绝完整但长度错误的 RDATA",
 TEST_CASE("RDATA 先检查报文边界再检查类型长度",
           "[message_parser][rdata][bounds]") {
     for (const auto type : {std::uint16_t{1}, std::uint16_t{28},
-                            std::uint16_t{5}, std::uint16_t{65000}}) {
+                            std::uint16_t{2}, std::uint16_t{5}, std::uint16_t{6},
+                            std::uint16_t{12}, std::uint16_t{15}, std::uint16_t{16},
+                            std::uint16_t{65000}}) {
         CAPTURE(type);
         auto packet = header({0, 1, 0, 0});
         const std::array bytes{std::byte{0}, std::byte{0}, std::byte{0}};
@@ -397,6 +399,225 @@ TEST_CASE("报文解析拒绝声明区段之后的尾随字节",
     packet.push_back(std::byte{0xc0});
     packet.push_back(std::byte{0xff});
     check_error(packet, DnsParseErrorCode::TrailingData, 45);
+}
+
+TEST_CASE("NS CNAME PTR 对任意类别解析压缩名称及根名",
+          "[message_parser][names]") {
+    for (const auto type : {std::uint16_t{2}, std::uint16_t{5}, std::uint16_t{12}}) {
+        for (const auto rr_class : {std::uint16_t{1}, std::uint16_t{3}, std::uint16_t{65535}}) {
+            CAPTURE(type, rr_class);
+            auto packet = golden_response();
+            packet.resize(29);
+            set_word(packet, 6, 2);
+            const Packet name{std::byte{2}, std::byte{'N'}, std::byte{'s'},
+                              std::byte{0xc0}, std::byte{12}};
+            append_record(packet, type, rr_class, name);
+            append_record(packet, type, rr_class, root_name);
+            const auto result = parse_message(packet);
+            REQUIRE(result.has_value());
+            REQUIRE(result->answers.size() == 2);
+            REQUIRE(std::holds_alternative<NameData>(result->answers[0].rdata));
+            CHECK(result->answers[0].rr_class == rr_class);
+            const std::vector<std::string> expected{"Ns", "example", "com"};
+            CHECK(std::get<NameData>(result->answers[0].rdata).name.labels == expected);
+            CHECK(std::get<NameData>(result->answers[1].rdata).name.labels.empty());
+        }
+    }
+}
+
+TEST_CASE("MX 保留优先级并允许压缩交换名称及根目标",
+          "[message_parser][mx]") {
+    for (const auto rr_class : {std::uint16_t{1}, std::uint16_t{3}, std::uint16_t{65535}}) {
+        CAPTURE(rr_class);
+        auto packet = golden_response();
+        packet.resize(29);
+        set_word(packet, 6, 3);
+        const Packet mx{
+            std::byte{0xff}, std::byte{0xff}, std::byte{4}, std::byte{'M'},
+            std::byte{'a'}, std::byte{'i'}, std::byte{'l'}, std::byte{0xc0}, std::byte{12}};
+        append_record(packet, 15, rr_class, mx);
+        const Packet root_mx{std::byte{0}, std::byte{0}, std::byte{0}};
+        append_record(packet, 15, rr_class, root_mx);
+        const Packet exchange_pointer{std::byte{0xc0}, std::byte{42}};
+        append_record(packet, 2, rr_class, exchange_pointer);
+
+        const auto result = parse_message(packet);
+        REQUIRE(result.has_value());
+        REQUIRE(result->answers.size() == 3);
+        REQUIRE(std::holds_alternative<MxData>(result->answers[0].rdata));
+        const auto& first = std::get<MxData>(result->answers[0].rdata);
+        CHECK(first.preference == 65535);
+        const std::vector<std::string> expected{"Mail", "example", "com"};
+        CHECK(first.exchange.labels == expected);
+        CHECK(result->answers[0].rr_class == rr_class);
+        const auto& second = std::get<MxData>(result->answers[1].rdata);
+        CHECK(second.preference == 0);
+        CHECK(second.exchange.labels.empty());
+        CHECK(std::get<NameData>(result->answers[2].rdata).name.labels == expected);
+    }
+}
+
+TEST_CASE("TXT 保留分段边界空段及非 UTF8 字节",
+          "[message_parser][txt]") {
+    const Packet binary{std::byte{0}, std::byte{0xff}, std::byte{0x80}};
+    Packet longest(255, std::byte{0xc0});
+    longest.back() = std::byte{0};
+    const std::vector<Packet> strings{Packet{}, binary, Packet{std::byte{'"'}}, Packet{}, longest};
+    Packet data;
+    for (const auto& string : strings) {
+        data.push_back(static_cast<std::byte>(string.size()));
+        data.insert(data.end(), string.begin(), string.end());
+    }
+    for (const auto rr_class : {std::uint16_t{1}, std::uint16_t{3}, std::uint16_t{65535}}) {
+        CAPTURE(rr_class);
+        auto packet = header({0, 2, 0, 0});
+        append_record(packet, 16, rr_class, data);
+        append_record(packet, 16, rr_class, root_name); // 一个空字符串是合法 TXT。
+        const auto result = parse_message(packet);
+        REQUIRE(result.has_value());
+        REQUIRE(std::holds_alternative<TxtData>(result->answers[0].rdata));
+        CHECK(result->answers[0].rr_class == rr_class);
+        CHECK(std::get<TxtData>(result->answers[0].rdata).strings == strings);
+        const std::vector<Packet> empty_string{Packet{}};
+        CHECK(std::get<TxtData>(result->answers[1].rdata).strings == empty_string);
+    }
+}
+
+TEST_CASE("TXT 拒绝没有字符串及越过自身 RDATA 的字符串",
+          "[message_parser][txt][bounds]") {
+    auto empty = header({0, 1, 0, 0});
+    append_record(empty, 16, 1, {});
+    check_error(empty, DnsParseErrorCode::InvalidRdataLength, 21);
+
+    Packet truncated_long(255, std::byte{0});
+    truncated_long[0] = std::byte{255}; // 长度字节之后只有 254 字节。
+    for (const auto& data : {Packet{std::byte{1}},
+                             Packet{std::byte{0}, std::byte{2}, std::byte{'x'}},
+                             truncated_long}) {
+        CAPTURE(data.size());
+        auto packet = header({0, 2, 0, 0});
+        append_record(packet, 16, 1, data);
+        append_record(packet, 65000, 1, {});
+        check_error(packet, DnsParseErrorCode::RdataLengthMismatch, 23);
+    }
+}
+
+TEST_CASE("SOA 展开两个压缩名称并保留五个完整无符号整数",
+          "[message_parser][soa]") {
+    for (const auto rr_class : {std::uint16_t{1}, std::uint16_t{3}, std::uint16_t{65535}}) {
+        CAPTURE(rr_class);
+        auto packet = golden_response();
+        packet.resize(29);
+        Packet soa{
+            std::byte{2}, std::byte{'N'}, std::byte{'s'}, std::byte{0xc0}, std::byte{12},
+            std::byte{4}, std::byte{'H'}, std::byte{'o'}, std::byte{'s'}, std::byte{'t'},
+            std::byte{0xc0}, std::byte{40}}; // RNAME 回指本条 RDATA 的 MNAME。
+        for (const auto value : {0xffffffffU, 0x80000000U, 3600U, 0U, 86400U}) {
+            append_u32_be(soa, value);
+        }
+        append_record(packet, 6, rr_class, soa);
+        const auto result = parse_message(packet);
+        REQUIRE(result.has_value());
+        REQUIRE(std::holds_alternative<SoaData>(result->answers[0].rdata));
+        CHECK(result->answers[0].rr_class == rr_class);
+        const auto& data = std::get<SoaData>(result->answers[0].rdata);
+        const std::vector<std::string> primary{"Ns", "example", "com"};
+        const std::vector<std::string> mailbox{"Host", "Ns", "example", "com"};
+        CHECK(data.mname.labels == primary);
+        CHECK(data.rname.labels == mailbox);
+        CHECK(data.serial == 0xffffffffU);
+        CHECK(data.refresh == 0x80000000U);
+        CHECK(data.retry == 3600);
+        CHECK(data.expire == 0);
+        CHECK(data.minimum == 86400);
+    }
+}
+
+TEST_CASE("SOA 固定尾部不能截断借用下一记录或留下额外字节",
+          "[message_parser][soa][bounds]") {
+    for (std::size_t available = 0; available < 20; ++available) {
+        CAPTURE(available);
+        auto packet = header({0, 2, 0, 0});
+        Packet soa(2 + available, std::byte{0}); // 两个根名称之后逐字节截断整数尾部。
+        append_record(packet, 6, 1, soa);
+        append_record(packet, 65000, 1, Packet(20, std::byte{0}));
+        check_error(packet, DnsParseErrorCode::InvalidRdataLength, 21);
+    }
+    auto valid = header({0, 1, 0, 0});
+    append_record(valid, 6, 1, Packet(22, std::byte{0}));
+    const auto result = parse_message(valid);
+    REQUIRE(result.has_value());
+    const auto& data = std::get<SoaData>(result->answers[0].rdata);
+    CHECK(data.mname.labels.empty());
+    CHECK(data.rname.labels.empty());
+
+    auto padded = header({0, 1, 0, 0});
+    append_record(padded, 6, 1, Packet(23, std::byte{0}));
+    check_error(padded, DnsParseErrorCode::RdataLengthMismatch, 23);
+}
+
+TEST_CASE("嵌入名称不能通过下一记录补齐指针或根标签",
+          "[message_parser][names][bounds]") {
+    struct Sample {
+        std::uint16_t type;
+        Packet bytes;
+    };
+    const std::array samples{
+        Sample{2, {std::byte{0xc0}}},
+        Sample{12, {std::byte{1}, std::byte{'a'}}},
+        Sample{15, {std::byte{0}, std::byte{10}, std::byte{0xc0}}},
+        Sample{6, {std::byte{0xc0}}},
+        Sample{6, {std::byte{0}, std::byte{0xc0}}},
+    };
+    for (const auto& sample : samples) {
+        CAPTURE(sample.type, sample.bytes.size());
+        auto packet = header({0, 2, 0, 0}, 0x8180, 0);
+        append_record(packet, sample.type, 1, sample.bytes);
+        append_record(packet, 65000, 1, {});
+        check_error(packet, DnsParseErrorCode::RdataLengthMismatch, 23);
+    }
+}
+
+TEST_CASE("MX 固定前缀和名称长度必须完整匹配 RDATA",
+          "[message_parser][mx][bounds]") {
+    for (const auto& bytes : {Packet{}, Packet{std::byte{0}}}) {
+        auto packet = header({0, 2, 0, 0});
+        append_record(packet, 15, 1, bytes);
+        append_record(packet, 65000, 1, {});
+        check_error(packet, DnsParseErrorCode::InvalidRdataLength, 21);
+    }
+    auto missing = header({0, 1, 0, 0});
+    append_record(missing, 15, 1, Packet(2, std::byte{0}));
+    check_error(missing, DnsParseErrorCode::NameOutOfBounds, 25);
+
+    auto padded = header({0, 1, 0, 0});
+    append_record(padded, 15, 1, Packet(4, std::byte{0}));
+    check_error(padded, DnsParseErrorCode::RdataLengthMismatch, 23);
+}
+
+TEST_CASE("新增名称记录透传嵌入名称和压缩目标的错误偏移",
+          "[message_parser][names][errors]") {
+    struct Sample {
+        std::uint16_t type;
+        Packet bytes;
+        DnsParseErrorCode code;
+        std::size_t offset;
+    };
+    const std::array samples{
+        Sample{2, {std::byte{0x40}}, DnsParseErrorCode::ReservedLabelEncoding, 23},
+        Sample{12, {std::byte{0xc0}, std::byte{0xff}},
+               DnsParseErrorCode::CompressionPointerOutOfBounds, 23},
+        Sample{15, {std::byte{0}, std::byte{1}, std::byte{0xc0}, std::byte{2}},
+               DnsParseErrorCode::ReservedLabelEncoding, 2},
+        Sample{6, {std::byte{0}, std::byte{0xc0}, std::byte{0xff}},
+               DnsParseErrorCode::CompressionPointerOutOfBounds, 24},
+    };
+    for (const auto& sample : samples) {
+        CAPTURE(sample.type);
+        auto packet = header({0, 1, 0, 0}, 0x4080);
+        append_record(packet, sample.type, 1, sample.bytes);
+        check_error(packet, sample.code, sample.offset);
+    }
 }
 
 } // 命名空间

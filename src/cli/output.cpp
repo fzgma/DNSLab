@@ -1,6 +1,7 @@
 #include "cli/output.hpp"
 
 #include "dns/name_codec.hpp"
+#include "dns/record_types.hpp"
 #include "net/endpoint.hpp"
 
 #include <algorithm>
@@ -42,18 +43,10 @@ std::string_view difference_text(bool different) {
 
 /// 将记录类型转为标准名称，并保留未知类型的数字编号。
 std::string type_name(std::uint16_t type) {
-    switch (type) {
-    case 1: return "A";
-    case 2: return "NS";
-    case 5: return "CNAME";
-    case 6: return "SOA";
-    case 12: return "PTR";
-    case 15: return "MX";
-    case 16: return "TXT";
-    case 28: return "AAAA";
-    case 41: return "OPT";
-    default: return std::format("TYPE{}", type);
+    if (const auto name = dns::query_type_name(type); !name.empty()) {
+        return std::string{name};
     }
+    return type == 41 ? "OPT" : std::format("TYPE{}", type);
 }
 
 /// 将记录类别转为标准名称，并保留未知类别的数字编号。
@@ -228,9 +221,26 @@ void print_question(std::FILE* output, const dns::DnsQuestion& question) {
                  class_name(question.qclass), type_name(question.type));
 }
 
+/// 为每个 TXT 字符字符串保留独立引号，并转义可能改变终端显示的字节。
+void print_txt(std::FILE* output, const dns::TxtData& data) {
+    for (std::size_t index = 0; index < data.strings.size(); ++index) {
+        std::print(output, "{}\"", index == 0 ? "" : " ");
+        for (const auto byte : data.strings[index]) {
+            const auto value = std::to_integer<unsigned int>(byte);
+            // 固定三位十进制避免转义与后续数字混淆，同时保留非文本内容和空段。
+            if (value < 0x20U || value >= 0x7fU || value == '"' || value == '\\') {
+                std::print(output, "\\{:03}", value);
+            } else {
+                std::print(output, "{}", static_cast<char>(value));
+            }
+        }
+        std::print(output, "\"");
+    }
+}
+
 /// 展示已解析的记录值，并将未知记录保留为长度和十六进制字节。
 void print_rdata(std::FILE* output, const dns::RData& rdata) {
-    /// 按记录数据的实际类型选择地址、名称或原始字节格式。
+    /// 按记录数据的实际类型保留名称、数值、文本分段或未知原始字节。
     std::visit([&](const auto& data) {
         using T = std::decay_t<decltype(data)>;
         if constexpr (std::is_same_v<T, dns::AData>) {
@@ -243,6 +253,14 @@ void print_rdata(std::FILE* output, const dns::RData& rdata) {
             std::print(output, "{}", endpoint.substr(1, endpoint.find(']') - 1));
         } else if constexpr (std::is_same_v<T, dns::NameData>) {
             std::print(output, "{}", dns::format_name(data.name));
+        } else if constexpr (std::is_same_v<T, dns::MxData>) {
+            std::print(output, "{} {}", data.preference, dns::format_name(data.exchange));
+        } else if constexpr (std::is_same_v<T, dns::TxtData>) {
+            print_txt(output, data);
+        } else if constexpr (std::is_same_v<T, dns::SoaData>) {
+            std::print(output, "{} {} {} {} {} {} {}", dns::format_name(data.mname),
+                dns::format_name(data.rname), data.serial, data.refresh, data.retry,
+                data.expire, data.minimum);
         } else if constexpr (std::is_same_v<T, dns::OpaqueData>) {
             std::print(output, "\\# {}", data.bytes.size());
             if (!data.bytes.empty()) { std::print(output, " "); }

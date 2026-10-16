@@ -32,23 +32,34 @@ struct RecordKey {
     std::uint16_t type;
     std::uint16_t rr_class;
     std::size_t data_kind;
-    std::vector<std::string> target;
+    std::vector<std::vector<std::string>> names;
+    std::vector<std::uint32_t> numbers;
+    std::vector<dns::Packet> strings;
     dns::Packet bytes;
 
     /// 按规范化名称、类型、类别及完整数据排序，不把 TTL 纳入记录身份。
     auto operator<=>(const RecordKey&) const = default;
 };
 
-/// 将已解析记录转为稳定比较键，名称数据折叠大小写，其他数据逐字节保留。
+/// 将已解析记录转为稳定比较键，名称折叠大小写，数值和字符字符串边界完整保留。
 RecordKey record_key(const dns::ResourceRecord& record) {
     RecordKey key{normalized_labels(record.owner), record.type, record.rr_class,
-                  record.rdata.index(), {}, {}};
+                  record.rdata.index(), {}, {}, {}, {}};
     if (const auto* address = std::get_if<dns::AData>(&record.rdata)) {
         key.bytes.assign(address->address.begin(), address->address.end());
     } else if (const auto* address6 = std::get_if<dns::AaaaData>(&record.rdata)) {
         key.bytes.assign(address6->address.begin(), address6->address.end());
     } else if (const auto* target = std::get_if<dns::NameData>(&record.rdata)) {
-        key.target = normalized_labels(target->name);
+        key.names.push_back(normalized_labels(target->name));
+    } else if (const auto* mx = std::get_if<dns::MxData>(&record.rdata)) {
+        key.names.push_back(normalized_labels(mx->exchange));
+        key.numbers.push_back(mx->preference);
+    } else if (const auto* txt = std::get_if<dns::TxtData>(&record.rdata)) {
+        // TXT 不是域名：大小写、字符串顺序和空段都属于记录内容。
+        key.strings = txt->strings;
+    } else if (const auto* soa = std::get_if<dns::SoaData>(&record.rdata)) {
+        key.names = {normalized_labels(soa->mname), normalized_labels(soa->rname)};
+        key.numbers = {soa->serial, soa->refresh, soa->retry, soa->expire, soa->minimum};
     } else {
         key.bytes = std::get<dns::OpaqueData>(record.rdata).bytes;
     }

@@ -52,10 +52,10 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def invoke(endpoint, *options, expected_code=0):
+def invoke(endpoint, *options, expected_code=0, name="example.com"):
     """运行真实查询命令并收集退出码及 UTF-8 输出。"""
     result = subprocess.run(
-        [EXECUTABLE, "query", "example.com", "--server", endpoint, *options],
+        [EXECUTABLE, "query", name, "--server", endpoint, *options],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=7,
     )
     require(result.returncode == expected_code,
@@ -66,10 +66,10 @@ def invoke(endpoint, *options, expected_code=0):
     return result
 
 
-def check_request(query, record_type=1):
+def check_request(query, record_type=1, wire_name=QUESTION_NAME):
     """独立检查客户端发送的 DNS 报文字节及传输约定。"""
     expected = b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
-    expected += QUESTION_NAME + struct.pack("!HH", record_type, 1)
+    expected += wire_name + struct.pack("!HH", record_type, 1)
     require(query[2:] == expected, f"DNS 请求不符合预期: {query.hex()}")
 
 
@@ -98,6 +98,52 @@ def answer_response(query, kind):
             record(alias, 1, socket.inet_pton(socket.AF_INET, "192.0.2.10")),
         ]
     return response(query, answers)
+
+
+def direct_record_fixture(kind, ipv6_ptr=False):
+    """提供六种直接查询的独立请求名称、记录字节与完整显示黄金值。"""
+    name, wire_name = "example.com", QUESTION_NAME
+    fixtures = {
+        "CNAME": (5, b"\x05alias\xc0\x0c", "alias.example.com."),
+        "NS": (2, b"\x02ns\xc0\x0c", "ns.example.com."),
+        "MX": (15, b"\x00\x0a\x04mail\xc0\x0c", "10 mail.example.com."),
+        "SOA": (6, b"\x02ns\xc0\x0c\x0ahostmaster\xc0\x0c" +
+                struct.pack("!IIIII", 2026010101, 3600, 600, 86400, 60),
+                "ns.example.com. hostmaster.example.com. 2026010101 3600 600 86400 60"),
+        "TXT": (16, b'\x0aplain text\x00\x0fA"\\\x00\t\n\r\x1b[31m\x7f\x80\xff',
+                r'"plain text" "" "A\034\092\000\009\010\013\027[31m\127\128\255"'),
+        "PTR": (12, b"\x04host" + QUESTION_NAME, "host.example.com."),
+    }
+    if kind == "PTR":
+        name = "10.2.0.192.in-addr.arpa"
+        wire_name = b"\x0210\x012\x010\x03192\x07in-addr\x04arpa\x00"
+        if ipv6_ptr:
+            name = "1." + "0." * 23 + "8.b.d.0.1.0.0.2.ip6.arpa"
+            wire_name = (b"\x011" + b"\x010" * 23 +
+                         b"\x018\x01b\x01d\x010\x011\x010\x010\x012\x03ip6\x04arpa\x00")
+    record_type, payload, display = fixtures[kind]
+    return name, wire_name, record_type, payload, display
+
+
+def direct_response(query, kind, ipv6_ptr=False):
+    """返回与直接查询类型一致的单条回答，名称数据可使用问题区压缩指针。"""
+    _, _, record_type, payload, _ = direct_record_fixture(kind, ipv6_ptr)
+    return response(query, [record(b"\xc0\x0c", record_type, payload)])
+
+
+def check_direct_output(result, kind, name, display, transport):
+    """逐行核对直接回答的可读字段，并禁止 TXT 原始控制字节污染终端。"""
+    for text in (f"传输: {transport}", "响应码: NOERROR (0)",
+                 f"问题: {name}. IN {kind}", "回答: 1"):
+        require(text in result.stdout, f"直接查询缺少 {text!r}: {result.stdout}")
+    expected = f"{name}. 60 IN {kind} {display}"
+    require(expected in [line.strip() for line in result.stdout.splitlines()],
+            f"记录显示不符合黄金值 {expected!r}: {result.stdout!r}")
+    require("的直接" not in result.stdout, "匹配类型的直接回答被错误描述为缺失")
+    if kind == "TXT":
+        for byte in (0, 9, 13, 27, 31, 127, 128, 255):
+            require(chr(byte) not in result.stdout, f"TXT 原始字节 {byte} 泄漏到终端")
+        require("\ufffd" not in result.stdout, "TXT 非 ASCII 字节被错误解码为替换字符")
 
 
 def read_exact(stream, length, deadline):
@@ -167,7 +213,8 @@ def endpoint(server):
     return f"127.0.0.1:{server.getsockname()[1]}"
 
 
-def udp_exchange(reply, *options, record_type=1, expected_code=0):
+def udp_exchange(reply, *options, record_type=1, expected_code=0,
+                 name="example.com", wire_name=QUESTION_NAME):
     """执行一次真实 UDP 命令并验证服务端只收到一个请求。"""
     with bind_socket(socket.SOCK_DGRAM) as server:
         requests = []
@@ -176,11 +223,11 @@ def udp_exchange(reply, *options, record_type=1, expected_code=0):
             """在给定截止时间内处理本场景的回环查询。"""
             query, sender = server.recvfrom(65535)
             requests.append(query)
-            check_request(query, record_type)
+            check_request(query, record_type, wire_name)
             server.sendto(reply(query), sender)
 
         with worker(serve):
-            result = invoke(endpoint(server), *options, expected_code=expected_code)
+            result = invoke(endpoint(server), *options, expected_code=expected_code, name=name)
         require(len(requests) == 1, "UDP 服务器收到的查询数量不是一个")
         return result
 
@@ -243,6 +290,75 @@ def plain_tcp_aaaa():
         for text in ("传输: tcp", "响应码: NOERROR (0)", "尝试: 1",
                      "example.com. 60 IN AAAA 2001:db8::10"):
             require(text in result.stdout, f"缺少 TCP 输出 {text!r}: {result.stdout}")
+
+
+def check_udp_direct_type(kind):
+    """验证实际 UDP 请求类型、直接回答和名称；PTR 分别使用两类显式反向名称。"""
+    for ipv6_ptr in ((False, True) if kind == "PTR" else (False,)):
+        name, wire_name, record_type, _, display = direct_record_fixture(kind, ipv6_ptr)
+        result = udp_exchange(lambda query: direct_response(query, kind, ipv6_ptr),
+                              "-T", "udp", "-t", kind.lower(), record_type=record_type,
+                              name=name, wire_name=wire_name)
+        check_direct_output(result, kind, name, display, "udp")
+
+
+@case
+def plain_udp_direct_cname():
+    """验证直接 CNAME 查询使用类型五并展示目标名称。"""
+    check_udp_direct_type("CNAME")
+
+
+@case
+def plain_udp_direct_mx():
+    """验证直接 MX 查询保留优先级和交换服务器名称。"""
+    check_udp_direct_type("MX")
+
+
+@case
+def plain_udp_direct_txt():
+    """验证 TXT 分段、空段与恶意控制字节的安全显示。"""
+    check_udp_direct_type("TXT")
+
+
+@case
+def plain_udp_direct_ns():
+    """验证直接 NS 查询展示名称服务器。"""
+    check_udp_direct_type("NS")
+
+
+@case
+def plain_udp_direct_soa():
+    """验证 SOA 的两个名称与五个数值按固定顺序展示。"""
+    check_udp_direct_type("SOA")
+
+
+@case
+def plain_udp_direct_ptr():
+    """验证 PTR 请求原样使用显式 IPv4 和 IPv6 反向名称。"""
+    check_udp_direct_type("PTR")
+
+
+@case
+def plain_tcp_direct_soa():
+    """验证新记录类型通过 TCP 查询时仍使用正确帧、请求类型和字段输出。"""
+    name, wire_name, record_type, _, display = direct_record_fixture("SOA")
+    with bind_socket(socket.SOCK_STREAM) as server:
+        server.listen(1)
+        requests = []
+
+        def serve(deadline):
+            """读取一个 SOA 请求并返回带压缩名称的完整 SOA 回答。"""
+            stream, _ = server.accept()
+            with stream:
+                query = read_frame(stream, deadline)
+                check_request(query, record_type, wire_name)
+                requests.append(query)
+                send_frame(stream, direct_response(query, "SOA"))
+
+        with worker(serve):
+            result = invoke(endpoint(server), "--transport", "tcp", "--type", "sOa", name=name)
+        require(len(requests) == 1, "TCP SOA 查询次数错误")
+        check_direct_output(result, "SOA", name, display, "tcp")
 
 
 @case
@@ -313,7 +429,7 @@ def plain_invalid_inputs_do_not_use_the_network():
     with bind_socket(socket.SOCK_STREAM) as tcp:
         tcp.listen(1)
         with bind_socket(socket.SOCK_DGRAM, tcp.getsockname()[1]) as udp:
-            for options in (("--type", "MX"), ("--type", "A", "-t", "A")):
+            for options in (("--type", "ANY"), ("--type", "AXFR"), ("--type", "A", "-t", "A")):
                 result = invoke(endpoint(tcp), *options, expected_code=2)
                 require("参数错误:" in result.stderr, result.stderr)
             readable, _, _ = select.select([udp, tcp], [], [], 0.05)

@@ -14,7 +14,7 @@ namespace dnslab::dns {
 [[nodiscard]] std::expected<DnsMessage, DnsParseError>
 parse_message(std::span<const std::byte> packet);
 
-/// 使用调用方提供的事务 ID 编码一个未压缩的 IN A 或 AAAA 查询。
+/// 使用调用方事务 ID 编码一个支持类型的未压缩 IN 查询。
 // 先检查名称，再检查查询类型和类别，以保持错误优先级。
 [[nodiscard]] std::expected<Packet, DnsEncodeError>
 encode_query(const DnsQuestion& question, std::uint16_t transaction_id,

@@ -463,7 +463,7 @@ TEST_CASE("无效自动查询输入既不发送 UDP 也不连接 TCP", "[query][
     invalid_name.name.labels.push_back("");
     auto invalid_class = example_question();
     invalid_class.qclass = 3;
-    for (const auto& question : {invalid_name, example_question(5), invalid_class}) {
+    for (const auto& question : {invalid_name, example_question(255), invalid_class}) {
         check_error(app::query_server(question, tcp.endpoint(),
                                       app::TransportMode::Auto, 1500ms, query_id),
                     app::QueryErrorCode::Encode);
