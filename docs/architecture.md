@@ -1,12 +1,15 @@
 # 架构
 
-本文说明当前单服务器查询的模块职责、传输编排和结果模型。命令与输入规则分别见 [cli.md](cli.md)、[validation.md](validation.md)。`compare` 与 JSON 报告尚未实现，其需求由 [prd.md](prd.md) 和 [mvp.md](mvp.md) 维护。
+本文说明当前查询与比较的模块职责、传输编排和结果模型。命令与输入规则分别见 [cli.md](cli.md)、[validation.md](validation.md)。JSON 报告尚未实现，其需求由 [prd.md](prd.md) 和 [mvp.md](mvp.md) 维护。
 
 ## 模块与依赖
 
 ```mermaid
 flowchart TD
     Main[命令行入口] --> App[查询用例]
+    Main --> Compare[服务器比较]
+    Compare --> App
+    Compare --> Diff[响应差异]
     Main --> Output[终端展示]
     App --> Codec[DNS 报文编解码]
     App --> Plain[UDP 与 TCP 传输]
@@ -18,7 +21,7 @@ flowchart TD
 | --- | --- | --- |
 | `src/main.cpp` | 解析选项、校验输入、调用查询、映射退出码 | 不实现报文解析或网络收发 |
 | `src/cli/` | 将查询结果和错误转换为中文终端输出 | 不重新查询、不改变结论 |
-| `src/app/` | 准备事务、编排传输、匹配响应、决定回退、汇总尝试 | 不承担平台套接字或 TLS 细节 |
+| `src/app/` | 准备事务、编排传输、匹配响应、决定回退、汇总尝试及比较结果 | 不承担平台套接字或 TLS 细节 |
 | `src/dns/` | 处理名称、查询编码、消息解析和记录数据 | 只操作内存，不访问网络、文件或终端 |
 | `src/net/` | 处理端点、资源所有权、截止时间和消息收发 | 不解释 DNS RCODE，不决定 UDP→TCP 回退 |
 
@@ -53,6 +56,16 @@ flowchart TD
 网络层负责服务器名称解析、TLS 握手和消息边界；应用层复用查询编码、消息解析及响应匹配。一次加密查询只交换一个请求与响应，畸形或不匹配响应直接返回 `InvalidResponse`，不重试、不切换传输。证书、连接或收发失败也不能触发明文回退。
 
 DoH 使用 HTTPS POST 正文；DoT 在 TLS 上使用两字节长度帧，不发送 HTTP 请求。TLS 信任、HTTP 状态和媒体类型检查属于 [网络层](network.md#doh-与-dot)，不是 DNS 解析器职责。
+
+## 服务器比较
+
+`src/app/compare.hpp` 的 `compare_servers(question, servers, mode, budget)` 接受普通端点列表，返回 `std::expected<CompareResult, CompareError>`。先完整检查服务器数量、重复端点、端口、模式、预算和问题，再开始查询；全局参数错误不产生网络请求，并保留对应输入位置。
+
+当前按输入顺序串行调用 `query_server`，每台独立创建截止时间，不共享整个列表的预算。单台的查询错误作为结果保留并继续下一台；自动回退仍由单服务器用例负责。`CompareResult` 保存问题、模式、总耗时与有序条目，每项包含服务器及完整的 `QueryResult` 或 `QueryError`，不将失败转换成空响应。
+
+`compare_responses` 是纯内存接口，分别比较 RCODE、其他标志、三个记录区和 TTL。记录按名称、类型、类别与数据匹配，忽略顺序和名称的 ASCII 大小写，保留重复次数及不透明数据。TTL 在相同记录之间匹配，先抵消相同 TTL 的实例，再比较两侧剩余实例；单纯增删记录不算 TTL 变化。事务 ID 与耗时不参与响应一致性。
+
+终端选择首个成功响应作为比较参照；遇到失败项只展示原因。成功响应不足两个时不形成一致性结论，答案或 TTL 差异也不决定查询是否成功。
 
 ## 响应匹配
 

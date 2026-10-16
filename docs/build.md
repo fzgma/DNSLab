@@ -100,7 +100,7 @@ ctest --test-dir build-system --output-on-failure
 
 共享预设使用 Ninja 和 Debug 配置，产物位于 `build-<预设名>`。自定义 Ninja 等单配置生成器时通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`，可执行文件位于对应的配置子目录。
 
-单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒。集成测试使用本地模拟服务器验证 UDP/TCP、自动回退、DoH 和 DoT，不访问公共 DNS。当前结果统一记录在 [todo.md](todo.md)。
+单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒。集成测试使用本地模拟服务器验证 UDP/TCP、自动回退、DoH、DoT 和多服务器比较，不访问公共 DNS。当前结果统一记录在 [todo.md](todo.md)。
 
 加密集成测试使用 Python 标准库和仓库中的测试证书，HTTPS/TLS 监听临时端口；撤销列表服务固定使用 `127.0.0.1:18453`。资源锁只协调同一次 CTest 中的案例，不要同时从多个构建目录或独立进程运行这组测试。端口被占用时测试明确失败，详见 [TLS 测试夹具](../tests/fixtures/tls/README.md)。
 

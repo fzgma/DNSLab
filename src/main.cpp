@@ -1,5 +1,6 @@
 #include "dnslab/version.hpp"
 
+#include "app/compare.hpp"
 #include "app/encrypted_query.hpp"
 #include "app/query.hpp"
 #include "cli/output.hpp"
@@ -10,15 +11,18 @@
 
 #include <CLI/CLI.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <format>
 #include <print>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace {
 
@@ -83,6 +87,81 @@ int query_exit_code(const dnslab::app::QueryError& error) {
     return 1;
 }
 
+/// 将全量比较预检失败转换为中文参数错误，不启动任何服务器查询。
+int compare_argument_error(const dnslab::app::CompareError& error) {
+    using dnslab::app::CompareErrorCode;
+    std::string message;
+    switch (error.code) {
+    case CompareErrorCode::TooFewServers:
+        message = "compare 至少需要两个不同的 --server 端点。";
+        break;
+    case CompareErrorCode::DuplicateEndpoint:
+        message = "compare 不接受规范化后相同的服务器端点。";
+        break;
+    case CompareErrorCode::InvalidMode:
+        message = "--transport 只能为 auto、udp 或 tcp。";
+        break;
+    case CompareErrorCode::InvalidTimeout:
+        message = "--timeout-ms 的取值范围为 100–30000。";
+        break;
+    case CompareErrorCode::InvalidEndpoint:
+        message = "普通 DNS 的 IP 服务器端点无效。";
+        break;
+    case CompareErrorCode::Encode:
+        message = "比较查询无法编码。";
+        if (error.encode_error) {
+            message += std::format("（错误码 {}，标签索引 {}）",
+                static_cast<int>(error.encode_error->code), error.encode_error->label_index);
+        }
+        break;
+    }
+    if (error.input_index) {
+        message += std::format("服务器序号为 {}。", *error.input_index + 1);
+    }
+    return argument_error(message);
+}
+
+/// 校验全部服务器后执行比较，展示每项结果并按内部错误优先的规则返回退出码。
+int run_comparison(const dnslab::dns::DnsQuestion& question,
+                   std::span<const std::string> server_inputs,
+                   dnslab::app::TransportMode mode, std::chrono::milliseconds budget) {
+    using namespace dnslab;
+    if (server_inputs.size() < 2) {
+        return argument_error("compare 至少需要两个不同的 --server 端点。");
+    }
+    std::vector<std::string_view> inputs;
+    inputs.reserve(server_inputs.size());
+    for (const auto& server : server_inputs) {
+        inputs.emplace_back(server);
+    }
+    // 先解析完整列表并按地址字节与端口去重，后面的无效输入不能让前面的目标先收到请求。
+    const auto servers = net::parse_unique_endpoints(inputs);
+    if (!servers) {
+        const auto& error = servers.error();
+        if (error.first_duplicate_index) {
+            return argument_error(std::format("第 {} 个服务器与第 {} 个服务器重复。",
+                error.input_index + 1, *error.first_duplicate_index + 1));
+        }
+        return argument_error(std::format("第 {} 个 IP 服务器地址无效，字节偏移为 {}。",
+            error.input_index + 1, error.error.offset));
+    }
+    const auto result = app::compare_servers(question, *servers, mode, budget);
+    if (!result) {
+        return compare_argument_error(result.error());
+    }
+    cli::print_comparison(stdout, stderr, *result);
+    int exit_code = 0;
+    for (const auto& entry : result->entries) {
+        if (!entry.outcome) {
+            if (query_exit_code(entry.outcome.error()) == 3) {
+                return 3;
+            }
+            exit_code = 1;
+        }
+    }
+    return exit_code;
+}
+
 /// 中文化帮助模板和默认选项说明，并让后续子命令继承相同配置。
 void localize_help(CLI::App& command) {
     const auto formatter = command.get_formatter();
@@ -98,7 +177,7 @@ void localize_help(CLI::App& command) {
                              "显示程序版本并退出");
 }
 
-/// 校验命令行输入后执行一次查询，并用统一格式展示结果。
+/// 校验命令行输入后执行单服务器查询或多服务器比较，并统一展示结果。
 int run(int argc, char* argv[]) {
     using namespace dnslab;
     CLI::App command{"DNSLab：DNS 查询与诊断工具。", "dnslab"};
@@ -137,6 +216,24 @@ int run(int argc, char* argv[]) {
         "--ca-file", ca_file, "DoH 或 DoT 使用的 PEM CA 文件，默认使用系统信任"))
         ->type_name("PEM文件");
 
+    auto* compare = command.add_subcommand("compare", "依次查询多个普通 DNS 服务器并展示响应差异");
+    compare->group("命令");
+    compare->set_help_flag("-h,--help", "显示帮助并退出");
+    std::vector<std::string> compare_servers;
+    // 顶层只允许一个子命令，共用查询参数不会合并两种命令的输入。
+    single_value(compare->add_option("名称", name, "DNS 域名；根名称使用 '.'"))
+        ->type_name("域名")->required();
+    // 容器选项默认可吞并连续参数；显式限制每次只取一个值，重复选项的值则全部保留。
+    compare->add_option("-s,--server", compare_servers, "普通 DNS 的 IP 端点，重复指定至少两个不同端点")
+        ->expected(1)->allow_extra_args(false)->multi_option_policy(CLI::MultiOptionPolicy::TakeAll)
+        ->type_name("地址");
+    single_value(compare->add_option("-t,--type", type_text, "记录类型，不区分大小写"))
+        ->type_name("A|AAAA")->default_str("A");
+    single_value(compare->add_option("-T,--transport", transport_text, "每台服务器的普通 DNS 传输方式"))
+        ->type_name("auto|udp|tcp")->default_str("auto");
+    single_value(compare->add_option("--timeout-ms", timeout_text, "每台服务器独立的查询总预算，单位为毫秒"))
+        ->type_name("100..30000")->default_str("1500");
+
     try {
         // Windows 从宽字符命令行重建 UTF-8 参数，避免中文 CA 路径经过本机代码页后失真。
         command.parse(argc, command.ensure_utf8(argv));
@@ -151,28 +248,30 @@ int run(int argc, char* argv[]) {
         return 0;
     } catch (const CLI::ParseError& error) {
         // 解析器只提供错误类别；提示由应用生成，避免第三方英文泄漏到终端。
-        return argument_error(std::format("{}（解析错误码 {}）请使用 --help 或 query --help 查看用法。",
+        return argument_error(std::format("{}（解析错误码 {}）请使用 --help、query --help 或 compare --help 查看用法。",
                                            parse_error_reason(error.get_exit_code()),
                                            error.get_exit_code()));
     }
-    if (!query->parsed()) {
+    if (!query->parsed() && !compare->parsed()) {
         std::print("{}", command.help());
         return 0;
     }
 
-    const auto targets = server_option->count() + doh_option->count() + dot_option->count();
-    if (targets != 1) {
-        return argument_error("query 必须且只能指定 --server、--doh、--dot 中的一项。");
-    }
-    const bool encrypted = server_option->count() == 0;
-    if (encrypted && transport_option->count() != 0) {
-        return argument_error("--transport 只能与 --server 配合使用。");
-    }
-    if (!encrypted && ca_option->count() != 0) {
-        return argument_error("--ca-file 只能与 --doh 或 --dot 配合使用。");
-    }
-    if (ca_option->count() != 0 && ca_file.empty()) {
-        return argument_error("--ca-file 必须指定可读的 PEM 文件。");
+    const bool encrypted = query->parsed() && server_option->count() == 0;
+    if (query->parsed()) {
+        const auto targets = server_option->count() + doh_option->count() + dot_option->count();
+        if (targets != 1) {
+            return argument_error("query 必须且只能指定 --server、--doh、--dot 中的一项。");
+        }
+        if (encrypted && transport_option->count() != 0) {
+            return argument_error("--transport 只能与 --server 配合使用。");
+        }
+        if (!encrypted && ca_option->count() != 0) {
+            return argument_error("--ca-file 只能与 --doh 或 --dot 配合使用。");
+        }
+        if (ca_option->count() != 0 && ca_file.empty()) {
+            return argument_error("--ca-file 必须指定可读的 PEM 文件。");
+        }
     }
 
     type_text = ascii_upper(std::move(type_text));
@@ -201,6 +300,9 @@ int run(int argc, char* argv[]) {
     const dns::DnsQuestion question{
         std::move(*parsed_name), static_cast<std::uint16_t>(type_text == "A" ? 1 : 28), 1};
 
+    if (compare->parsed()) {
+        return run_comparison(question, compare_servers, mode, *budget);
+    }
     if (!encrypted) {
         const auto server = net::parse_endpoint(server_text);
         if (!server) {

@@ -4,13 +4,14 @@
 
 DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与耗时，帮助学习 DNS 协议和排查解析问题。
 
-当前版本为 **0.1.0 开发版**，已支持单服务器 **UDP、TCP、DoH 和 DoT 查询**。当前请从源码构建后运行；服务器比较与 JSON 报告仍待实现。开发进度见 [TODO](docs/todo.md)。
+当前开发代码支持单服务器 **UDP、TCP、DoH 和 DoT 查询**，以及多个普通 DNS 服务器的 **compare 比较**。请从源码构建后运行，JSON 报告仍待实现。`v0.1.0` 标签保留加入比较功能之前的查询版本；开发进度见 [TODO](docs/todo.md)。
 
 ## 1. 功能
 
 - **域名查询**：查询 A、AAAA，展示响应码、TTL、A/AAAA/CNAME 和各组记录。
 - **UDP 与 TCP**：支持显式选择传输，默认在有效 UDP 截断响应后回退 TCP。
 - **DoH 与 DoT**：直接指定 HTTPS 地址或 TLS 服务器，严格校验证书和服务器身份，可指定私有 CA。
+- **服务器比较**：依次查询多个不同 IP 端点，保留各自结果并展示响应差异；单台失败不取消后续查询。
 - **有限等待**：整个查询共用一个超时预算，回退、握手和部分收发不重置计时。
 - **过程与错误**：显示实际传输和尝试记录，区分参数错误、查询失败与 DNS 响应码。
 - **帮助与版本**：支持顶层和查询帮助，`--version` / `-V` 显示版本。
@@ -34,6 +35,7 @@ DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与�
 .\build-mingw-debug\dnslab.exe query example.com --server 1.1.1.1
 .\build-mingw-debug\dnslab.exe query example.com --doh https://cloudflare-dns.com/dns-query
 .\build-mingw-debug\dnslab.exe query example.com --dot dns.google --type AAAA
+.\build-mingw-debug\dnslab.exe compare example.com -s 1.1.1.1 -s 8.8.8.8
 ```
 
 如果使用 MSVC 预设，运行 `build-msvc-debug/dnslab.exe`。VS Code 的工具链与独立构建目录配置见[构建说明](docs/build.md#vs-code)。
@@ -46,6 +48,7 @@ DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与�
 ./build-linux-debug/dnslab query example.com --server 1.1.1.1 --transport tcp
 ./build-linux-debug/dnslab query example.com --doh https://cloudflare-dns.com/dns-query
 ./build-linux-debug/dnslab query example.com --dot dns.google
+./build-linux-debug/dnslab compare example.com -s 1.1.1.1 -s 8.8.8.8
 ```
 
 版本输出：
@@ -64,6 +67,7 @@ DNSLab 0.1.0
 | `--version` | `-V` | 显示版本并退出 |
 | 不带参数 | — | 显示帮助 |
 | `query <name>` | — | 查询一个域名或根名称 |
+| `compare <name>` | — | 比较至少两个不同的普通 DNS 服务器 |
 | `--server <endpoint>` | `-s` | 指定普通 DNS 的 IP 端点 |
 | `--doh <HTTPS URL>` | — | 指定 DoH 地址 |
 | `--dot <host[:port]>` | — | 指定 DoT 服务器 |
@@ -72,7 +76,7 @@ DNSLab 0.1.0
 | `--timeout-ms <n>` | — | 查询总预算 |
 | `--ca-file <path>` | — | 加密查询使用指定 CA 文件 |
 
-`--server`、`--doh`、`--dot` 三者选一。默认值、组合限制和退出码见[命令行接口](docs/cli.md)，名称与服务器输入规则见[输入校验](docs/validation.md)。`compare` 与报告选项尚未提供。
+`query` 在 `--server`、`--doh`、`--dot` 中选一；`compare` 重复指定 `--server`，只接受普通 IP 端点。默认值、组合限制和退出码见[命令行接口](docs/cli.md)，名称与服务器输入规则见[输入校验](docs/validation.md)。报告选项尚未提供。
 
 ## 4. 从源码构建
 
@@ -99,7 +103,7 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 │   ├── cli/            # 终端结果与错误展示
 │   ├── dns/            # 基础类型、字节工具、域名与报文处理
 │   ├── net/            # 端点、查询预算与普通及加密传输
-│   └── app/            # 响应匹配、单服务器查询与自动回退
+│   └── app/            # 响应匹配、单服务器查询、自动回退与比较
 ├── tests/
 │   ├── main.cpp        # 测试入口与 Windows 中文参数处理
 │   ├── unit/           # 报文处理与网络基础测试
@@ -118,7 +122,8 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 
 ## 6. 限制
 
-- 服务器比较和 JSON 报告仍待实现；暂不支持其他查询类型、DNSSEC 验证和 IDN 自动转换。
+- JSON 报告仍待实现；暂不支持加密服务器比较、其他查询类型、DNSSEC 验证和 IDN 自动转换。
+- 比较按输入顺序逐台执行，每台有独立预算，总耗时可能超过单台超时；差异仅供观察，不代表答案正确性或服务器排名。
 - DoH 使用 POST；DoT 不协商自定义 `dot` ALPN。加密连接失败不回退明文，也不使用代理环境变量。
 - 查询会发送给指定服务器；加密服务器名称的初次解析可能使用本机配置的普通 DNS。
 - 各平台验证结果与本机 IPv6 回环限制统一记录在[验证状态](docs/todo.md#验证状态)。

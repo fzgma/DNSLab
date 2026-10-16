@@ -25,6 +25,21 @@ std::string_view transport_name(app::QueryTransport transport) {
     return "未知";
 }
 
+/// 返回普通查询请求使用的传输模式标识，供尚未启动尝试的失败项展示。
+std::string_view transport_name(app::TransportMode mode) {
+    switch (mode) {
+    case app::TransportMode::Auto: return "auto";
+    case app::TransportMode::Udp: return "udp";
+    case app::TransportMode::Tcp: return "tcp";
+    }
+    return "未知";
+}
+
+/// 将单项差异标志转换为中文比较状态。
+std::string_view difference_text(bool different) {
+    return different ? "不同" : "相同";
+}
+
 /// 将记录类型转为标准名称，并保留未知类型的数字编号。
 std::string type_name(std::uint16_t type) {
     switch (type) {
@@ -316,6 +331,57 @@ void print_error(std::FILE* output, std::FILE* errors,
     std::print(errors, "查询失败: ");
     print_failure(errors, error.code, error.detail);
     std::println(errors, "");
+}
+
+/// 按输入顺序展示各服务器结果，并仅对有效响应计算差异。
+void print_comparison(std::FILE* output, std::FILE* errors, const app::CompareResult& result) {
+    std::println(output, "比较: {} 台服务器\n总耗时: {} 毫秒",
+                 result.entries.size(), milliseconds(result.elapsed));
+    std::size_t successes = 0;
+    std::size_t reference = result.entries.size();
+    for (std::size_t index = 0; index < result.entries.size(); ++index) {
+        const auto& entry = result.entries[index];
+        std::println(output, "\n服务器 {}/{}", index + 1, result.entries.size());
+        if (entry.outcome) {
+            print_result(output, *entry.outcome);
+            ++successes;
+            if (reference == result.entries.size()) {
+                reference = index;
+            }
+        } else {
+            const auto target = net::format_endpoint(entry.server);
+            std::println(errors, "服务器 {}: {}", index + 1, target);
+            print_error(output, errors, target, transport_name(result.mode),
+                        result.question, entry.outcome.error());
+        }
+    }
+
+    std::println(output, "\n差异摘要:\n成功响应: {}/{}", successes, result.entries.size());
+    if (successes < 2) {
+        std::println(output, "有效响应不足两份，无法比较响应差异（成功 {} 台，失败 {} 台）。",
+                     successes, result.entries.size() - successes);
+        return;
+    }
+    const auto& baseline = result.entries[reference];
+    std::println(output, "参照服务器: {} {}", reference + 1, net::format_endpoint(baseline.server));
+    std::println(output, "记录顺序与名称大小写不影响比较；TTL 仅比较可匹配的记录。");
+    for (std::size_t index = 0; index < result.entries.size(); ++index) {
+        if (index == reference) {
+            continue;
+        }
+        // 失败项没有可比较响应，不能把它补成空回答参与比较。
+        const auto differences = app::compare_responses(baseline, result.entries[index]);
+        if (!differences) {
+            std::println(output, "服务器 {}: 查询失败，未参与响应差异比较。", index + 1);
+        } else if (!differences->any()) {
+            std::println(output, "服务器 {}: 与参照响应一致。", index + 1);
+        } else {
+            std::println(output, "服务器 {} 与参照: RCODE={}, 标志={}, 回答={}, 权威记录={}, 附加记录={}, TTL={}",
+                index + 1, difference_text(differences->rcode), difference_text(differences->flags),
+                difference_text(differences->answers), difference_text(differences->authority),
+                difference_text(differences->additional), differences->ttl ? "不同" : "未发现差异");
+        }
+    }
 }
 
 } // 命名空间 dnslab::cli

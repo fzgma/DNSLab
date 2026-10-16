@@ -21,7 +21,7 @@ function(dnslab_register_tests cli_target unit_target integration_target version
             -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tests/cli_smoke.cmake")
     set_tests_properties(dnslab_cli_smoke PROPERTIES TIMEOUT 30 LABELS smoke)
 
-    foreach(suite encrypted_query plain_query_cli)
+    foreach(suite encrypted_query plain_query_cli compare_cli)
         set(script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../tests/integration/${suite}_tests.py")
         execute_process(COMMAND "${Python3_EXECUTABLE}" "${script}" --list-cases
             RESULT_VARIABLE discovery_result OUTPUT_VARIABLE cases

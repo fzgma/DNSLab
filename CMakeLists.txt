@@ -79,6 +79,7 @@ add_library(dnslab_core STATIC
     src/net/encrypted_transport.cpp
     src/app/response_validator.cpp
     src/app/query.cpp
+    src/app/compare.cpp
     src/app/udp_query.cpp
     src/app/encrypted_query.cpp)
 target_include_directories(dnslab_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -120,6 +121,7 @@ if(BUILD_TESTING)
         tests/unit/endpoint_tests.cpp
         tests/unit/encrypted_endpoint_tests.cpp
         tests/unit/deadline_tests.cpp
+        tests/unit/compare_tests.cpp
         tests/unit/response_validator_tests.cpp)
     target_link_libraries(dnslab_tests PRIVATE dnslab_core Catch2::Catch2 CLI11::CLI11)
     dnslab_enable_warnings(dnslab_tests)
@@ -132,6 +134,7 @@ if(BUILD_TESTING)
         tests/integration/udp_query_tests.cpp
         tests/integration/tcp_transport_tests.cpp
         tests/integration/tcp_query_tests.cpp
+        tests/integration/compare_tests.cpp
         tests/integration/query_fallback_tests.cpp)
     target_include_directories(dnslab_integration_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tests")
