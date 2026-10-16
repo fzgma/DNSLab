@@ -130,6 +130,8 @@ Windows 使用 Schannel，默认读取系统证书库；Linux 使用 OpenSSL，�
 
 连接与 HTTPS 交换使用剩余预算；DoT 在握手后继续使用原 `Deadline`。收发先尝试库内缓存，只有需要等待时才等待对应套接字，避免漏掉 TLS 内已解密的数据。EOF、超时、错误帧和证书失败不返回部分成功数据。响应的 DNS 语义仍由应用层解析与匹配。
 
+Windows Schannel 的证书链与撤销检查包含同步系统调用，不能在调用内部通过 curl 进度回调中断；当前依赖未将查询预算传给系统证书检索接口。因此证书检索缓慢时，实际返回可能晚于查询预算，返回后仍检查 `Deadline` 并判为超时，不接受迟到结果。系统检索的默认等待规则见 [CertGetCertificateChain](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certgetcertificatechain)。这不是严格的墙钟返回上限，也不构成关闭证书验证的理由。
+
 `EncryptedError` 保存分类 `code`、原始 `backend_code`（CURLcode）、`http_status` 与输入 `offset`。未涉及的数字诊断字段为零，端点偏移规则见 [输入校验](validation.md#加密服务器地址)。
 
 | 错误分类 | 含义 |

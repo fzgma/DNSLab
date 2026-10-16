@@ -4,11 +4,13 @@ CTest 通过 --list-cases 发现案例，并以 --executable 和 --case 单独�
 """
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import io
 import os
 from pathlib import Path
 import shutil
+import select
 import socket
 import ssl
 import struct
@@ -157,7 +159,71 @@ def send_http(stream, body, status=200, content_type="application/dns-message",
         stream.sendall(body)
 
 
+class ServerTlsStream:
+    """在固定截止时间内完成可取消的非阻塞 TLS 操作，仅由工作线程使用。"""
+
+    def __init__(self, stream, stop, deadline, waiting):
+        """保存同一连接的套接字、停止信号、截止时间及实际等待事件。"""
+        self.stream = stream
+        self.stop = stop
+        self.deadline = deadline
+        self.waiting = waiting
+        self.stream.setblocking(False)
+
+    def _remaining(self):
+        """在每次操作和等待前检查取消与绝对截止时间。"""
+        if self.stop.is_set():
+            raise ConnectionAbortedError("TLS 测试服务已取消当前操作")
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("TLS 测试服务操作超时")
+        return remaining
+
+    def _perform(self, operation, name):
+        """按 TLS 实际需要等待读或写，重试原操作且不重置总预算。"""
+        while True:
+            self._remaining()
+            try:
+                return operation()
+            except ssl.SSLWantReadError:
+                readable, writable = [self.stream], []
+                self.waiting[name, "read"].set()
+            except ssl.SSLWantWriteError:
+                readable, writable = [], [self.stream]
+                self.waiting[name, "write"].set()
+            select.select(readable, writable, [], min(0.05, self._remaining()))
+
+    def do_handshake(self):
+        """完成可被停止信号及时中断的 TLS 握手。"""
+        self._perform(self.stream.do_handshake, "handshake")
+
+    def recv(self, length):
+        """读取解密后的数据，并保留 EOF 与 TLS 原始异常。"""
+        return self._perform(lambda: self.stream.recv(length), "recv")
+
+    def sendall(self, data):
+        """发送全部数据，等待重试时保留原片段，仅在成功写入后推进偏移。"""
+        view = memoryview(data)
+        offset = 0
+        while offset < len(view):
+            part = view[offset:offset + 16384]
+            written = self._perform(lambda: self.stream.send(part), "send")
+            if written == 0:
+                raise EOFError("TLS 测试服务发送时连接关闭")
+            offset += written
+
+    def selected_alpn_protocol(self):
+        """读取握手完成后协商的应用协议。"""
+        return self.stream.selected_alpn_protocol()
+
+    def setsockopt(self, *arguments):
+        """在工作线程设置回归场景需要的套接字选项。"""
+        self.stream.setsockopt(*arguments)
+
+
 class TlsServer:
+    """由工作线程独占 TLS 对象，主线程只发送停止信号并有界回收。"""
+
     def __init__(self, transport, handler, certificate="server", handshake_delay=0,
                  expect_tls_failure=False, permit_disconnect=False):
         """准备回环监听套接字和本场景的 TLS 服务状态。"""
@@ -172,46 +238,63 @@ class TlsServer:
         self.server_names = []
         self.errors = []
         self.accepted = 0
-        self.active = None
+        self.waiting = {(operation, direction): threading.Event()
+                        for operation in ("handshake", "recv", "send")
+                        for direction in ("read", "write")}
+        self.phase = "准备 TLS"
+        self.client_result = None
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(4)
         self.listener.settimeout(0.1)
         self.port = self.listener.getsockname()[1]
-        self.thread = threading.Thread(target=self._serve, name="dnslab-test-tls")
+        # 未能回收线程仍判为失败；守护属性仅防止异常路径再次拖住测试进程退出。
+        self.thread = threading.Thread(target=self._serve, name="dnslab-test-tls", daemon=True)
 
     def __enter__(self):
-        """启动测试服务线程并返回当前服务对象。"""
+        """先准备证书和 TLS 上下文，再启动服务，避免客户端预算包含夹具初始化。"""
+        try:
+            self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.context.minimum_version = ssl.TLSVersion.TLSv1_2
+            self.context.load_cert_chain(FIXTURES / (self.certificate + ".pem"),
+                                        FIXTURES / (self.certificate + ".key"))
+            self.context.set_servername_callback(
+                lambda stream, name, selected: self.server_names.append(name))
+            if self.transport == "doh":
+                self.context.set_alpn_protocols(["http/1.1"])
+        except BaseException:
+            self.listener.close()
+            raise
         self.thread.start()
         return self
 
     def __exit__(self, exception_type, exception, tb):
-        """停止监听与活动连接，回收线程并传播服务端错误。"""
+        """通知工作线程取消操作并有界回收，保留调用方原始失败及客户端诊断。"""
         self.stop.set()
-        self.listener.close()
-        if self.active is not None:
-            try:
-                self.active.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
         self.thread.join(2)
-        require(not self.thread.is_alive(), "TLS 测试服务未能停止")
-        if exception_type is None:
-            require(not self.errors, f"TLS 测试服务失败: {self.errors!r}")
+        self.listener.close()
+        reason = "TLS 测试服务未能停止" if self.thread.is_alive() else \
+            (f"TLS 测试服务失败: {self.errors!r}" if self.errors else None)
+        if reason is not None:
+            detail = f"{reason}；阶段={self.phase}，已接受连接={self.accepted}，已收请求={len(self.requests)}"
+            if self.client_result is not None:
+                detail += (f"\n客户端退出码={self.client_result.returncode}"
+                           f"\n客户端标准输出:\n{self.client_result.stdout}"
+                           f"\n客户端标准错误:\n{self.client_result.stderr}")
+            if exception_type is None:
+                raise AssertionError(detail)
+            # 清理信息作为附加诊断，不能覆盖超时或客户端断言的原始异常。
+            if hasattr(exception, "add_note"):
+                exception.add_note(detail)
+            else:
+                print(detail, file=sys.stderr)
 
     def _serve(self):
         """在固定时限内完成 TLS 握手、读取请求并执行场景响应。"""
         end = time.monotonic() + 5
         try:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
-            context.load_cert_chain(FIXTURES / (self.certificate + ".pem"),
-                                    FIXTURES / (self.certificate + ".key"))
-            context.set_servername_callback(
-                lambda stream, name, selected: self.server_names.append(name))
-            if self.transport == "doh":
-                context.set_alpn_protocols(["http/1.1"])
             while not self.stop.is_set() and time.monotonic() < end:
+                self.phase = "等待连接"
                 try:
                     raw, _ = self.listener.accept()
                 except TimeoutError:
@@ -222,18 +305,21 @@ class TlsServer:
                     raise
                 self.accepted += 1
                 with raw:
-                    self.active = raw
-                    raw.settimeout(max(0.001, end - time.monotonic()))
+                    raw.setblocking(False)
                     if self.stop.wait(self.handshake_delay):
                         return
-                    try:
-                        stream = context.wrap_socket(raw, server_side=True)
-                    except (ssl.SSLError, ConnectionError):
-                        if self.expect_tls_failure or self.permit_disconnect:
-                            return
-                        raise
-                    with stream:
-                        self.active = stream
+                    # 创建、握手、读写及关闭都在此线程，避免跨线程破坏 TLS 内部状态。
+                    with self.context.wrap_socket(raw, server_side=True,
+                                                  do_handshake_on_connect=False) as secured:
+                        stream = ServerTlsStream(secured, self.stop, end, self.waiting)
+                        self.phase = "TLS 握手"
+                        try:
+                            stream.do_handshake()
+                        except (ssl.SSLError, ConnectionError):
+                            if self.expect_tls_failure or self.permit_disconnect:
+                                return
+                            raise
+                        self.phase = "读取请求"
                         if self.transport == "doh":
                             request = self._read_http(stream)
                         else:
@@ -241,16 +327,14 @@ class TlsServer:
                             request = {"body": read_exact(stream, length),
                                        "alpn": stream.selected_alpn_protocol()}
                         self.requests.append(request)
+                        self.phase = "发送响应"
                         self.handler(self, stream, request)
-                    self.active = None
         except (OSError, EOFError) as error:
             if not (self.stop.is_set() or self.permit_disconnect or
                     (self.expect_tls_failure and not self.requests)):
                 self.errors.append(error)
         except BaseException as error:
             self.errors.append(error)
-        finally:
-            self.active = None
 
     @staticmethod
     def _read_http(stream):
@@ -290,8 +374,10 @@ def invoke(server, *, transport=None, ca=True, timeout=1500, query_type="A", env
     environment = os.environ.copy()
     if env:
         environment.update(env)
-    return subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", timeout=7, env=environment)
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=7, env=environment)
+    server.client_result = result
+    return result
 
 
 def check_success(result, transport, rcode="NOERROR", answer=None):
@@ -571,8 +657,11 @@ def check_maximum_message(transport):
         else:
             stream.sendall(b"\xff\xff" + response)
     with TlsServer(transport, handler) as server:
-        result = invoke(server)
-    check_success(result, transport)
+        # 本例验证消息容量，给首次证书验证留出预算；800ms 共享截止时间案例仍单独约束超时。
+        result = invoke(server, timeout=5000)
+        check_success(result, transport)
+    require("TYPE65000 \\# 65494 " + "a5" * 65494 in result.stdout,
+            "最大报文的未知记录内容未完整展示")
     check_request(server)
 
 
@@ -750,6 +839,137 @@ def encrypted_queries_ignore_proxy_environment():
         else:
             connection.close()
             raise AssertionError("客户端连接了环境变量中的代理")
+
+
+def fixture_client(server, use_tls=False):
+    """为生命周期回归创建有界客户端，保持小接收缓冲以复现发送背压。"""
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        raw.settimeout(2)
+        raw.connect(("127.0.0.1", server.port))
+        if not use_tls:
+            return raw
+        context = ssl.create_default_context(cafile=str(CA_FILE))
+        return context.wrap_socket(raw, server_hostname="127.0.0.1")
+    except BaseException:
+        raw.close()
+        raise
+
+
+@case
+def tls_fixture_stops_pending_handshake():
+    """验证客户端不发握手数据时，退出夹具仍能主动终止真实 TLS 握手。"""
+    client = None
+    server = TlsServer("doh", answer_handler())
+    try:
+        with server:
+            client = fixture_client(server)
+            require(server.waiting["handshake", "read"].wait(1), "TLS 握手未实际进入等待读取")
+            require(server.phase == "TLS 握手", "沉默客户端不应完成 TLS 握手")
+        require(not server.thread.is_alive(), "握手被取消后服务线程仍存活")
+    finally:
+        # 保持客户端存活直至服务器退出，不能靠客户端关闭掩盖取消缺陷。
+        if client is not None:
+            client.close()
+
+
+@case
+def tls_fixture_stops_pending_read_and_write():
+    """验证请求未收全及客户端不读大响应时，退出夹具都能取消阻塞收发。"""
+    for sending in (False, True):
+        completed = threading.Event()
+
+        def handler(server, stream, request):
+            """向不读取响应的客户端发送足以填满本地缓冲区的数据。"""
+            stream.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+            stream.sendall(b"x" * (8 * 1024 * 1024))
+            completed.set()
+
+        client = None
+        server = TlsServer("doh", handler)
+        try:
+            with server:
+                client = fixture_client(server, use_tls=True)
+                if sending:
+                    query = (bytes.fromhex("123401000001000000000000") +
+                             b"\x07example\x03com\x00\x00\x01\x00\x01")
+                    client.sendall(b"POST /dns-query HTTP/1.1\r\nContent-Length: 29\r\n\r\n" + query)
+                    require(server.waiting["send", "write"].wait(1), "TLS 发送未实际进入等待可写")
+                    require(not completed.is_set(), "测试客户端未形成预期的发送背压")
+                else:
+                    client.sendall(b"POST /dns-query HTTP/1.1\r\n")
+                    require(server.waiting["recv", "read"].wait(1), "TLS 读取未实际进入等待读取")
+                    require(not server.requests, "不完整请求不应交给响应处理器")
+            require(not server.thread.is_alive(), "取消收发后服务线程仍存活")
+        finally:
+            if client is not None:
+                client.close()
+
+
+@case
+def tls_fixture_preserves_primary_failure():
+    """验证握手未完成时的清理不会替换调用方原始异常。"""
+    original = AssertionError("客户端原始失败")
+    client = None
+    server = TlsServer("doh", answer_handler())
+    try:
+        try:
+            with server:
+                client = fixture_client(server)
+                require(server.waiting["handshake", "read"].wait(1), "TLS 握手未实际进入等待读取")
+                raise original
+        except AssertionError as error:
+            require(error is original, f"服务器清理覆盖了客户端原始失败: {error}")
+        else:
+            raise AssertionError("服务器清理吞掉了客户端原始失败")
+        require(not server.thread.is_alive(), "原始失败退出后服务线程仍存活")
+    finally:
+        if client is not None:
+            client.close()
+
+    def broken_handler(server, stream, request):
+        """在收到真实请求后制造独立服务错误，验证双异常的保留顺序。"""
+        raise RuntimeError("并发服务错误标记")
+
+    original = AssertionError("客户端与服务端同时失败")
+    captured = io.StringIO()
+    with redirect_stderr(captured):
+        try:
+            with TlsServer("doh", broken_handler) as server:
+                result = invoke(server)
+                check_failure(result, "网络失败")
+                server.thread.join(1)
+                require(not server.thread.is_alive(), "失败处理器未结束")
+                raise original
+        except AssertionError as error:
+            require(error is original, f"服务错误覆盖了客户端原始失败: {error}")
+        else:
+            raise AssertionError("双异常场景吞掉了客户端原始失败")
+    detail = "\n".join(getattr(original, "__notes__", [])) + captured.getvalue()
+    for expected in ("并发服务错误标记", "客户端退出码=1", "已收请求=1"):
+        require(expected in detail, f"原始异常缺少附加服务诊断 {expected!r}: {detail}")
+
+
+@case
+def tls_fixture_keeps_client_diagnostics():
+    """验证服务端处理器失败时仍报告客户端退出码、输出和所在阶段。"""
+    def handler(server, stream, request):
+        """先返回有效响应，再产生可识别的测试服务错误。"""
+        answer_handler()(server, stream, request)
+        raise RuntimeError("测试处理器失败标记")
+
+    try:
+        with TlsServer("doh", handler) as server:
+            result = invoke(server)
+            check_success(result, "doh")
+    except AssertionError as error:
+        detail = str(error)
+        for expected in ("测试处理器失败标记", "阶段=发送响应", "已收请求=1",
+                         "客户端退出码=0", "响应码: NOERROR"):
+            require(expected in detail, f"清理失败缺少诊断 {expected!r}: {detail}")
+    else:
+        raise AssertionError("服务器处理器异常没有被报告")
 
 
 def main():
