@@ -4,7 +4,7 @@
 
 DNSLab 向用户指定的 DNS 服务器查询域名，展示响应、记录与耗时，帮助学习 DNS 协议和排查解析问题。
 
-当前开发代码支持单服务器 **UDP、TCP、DoH 和 DoT 查询**，以及多个普通 DNS 服务器的 **compare 比较**。请从源码构建后运行，JSON 报告仍待实现。`v0.1.0` 标签保留加入比较功能之前的查询版本；开发进度见 [TODO](docs/todo.md)。
+当前开发代码支持单服务器 **UDP、TCP、DoH 和 DoT 查询**，以及多个普通 DNS 服务器的 **compare 比较**。JSON 报告仍待实现。`v0.1.0` 标签提供单服务器查询，比较功能请从当前源码构建。后续任务见[待办](docs/todo.md)。
 
 ## 1. 功能
 
@@ -90,7 +90,7 @@ cmake --build --preset mingw-debug --parallel
 ctest --preset mingw-debug
 ```
 
-Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 配置见[构建与测试](docs/build.md)，实际验证环境见[开发进度](docs/todo.md#验证状态)。所有测试离线运行，不访问公共 DNS。
+Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装、VS Code 配置和测试用法见[构建与测试](docs/build.md)。所有测试离线运行，不访问公共 DNS。
 
 [GitHub Actions](https://github.com/fzgma/DNSLab/actions/workflows/build-test.yml) 覆盖 Windows、Ubuntu、Arch、Debian，分别运行冒烟、单元和集成测试。Linux 编译一次后复用同一份产物，环境与版本策略见[持续集成](docs/build.md#持续集成)。
 
@@ -126,7 +126,7 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 - 比较按输入顺序逐台执行，每台有独立预算，总耗时可能超过单台超时；差异仅供观察，不代表答案正确性或服务器排名。
 - DoH 使用 POST；DoT 不协商自定义 `dot` ALPN。加密连接失败不回退明文，也不使用代理环境变量。
 - 查询会发送给指定服务器；加密服务器名称的初次解析可能使用本机配置的普通 DNS。
-- 各平台验证结果与本机 IPv6 回环限制统一记录在[验证状态](docs/todo.md#验证状态)。
+- Windows 的同步证书检索可能使实际返回晚于查询预算，迟到结果仍判为超时，详见[加密传输边界](docs/network.md#doh-与-dot)。
 
 ## 7. 文档
 
@@ -134,7 +134,7 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 
 - [文档导航](docs/index.md)
 - [构建与测试](docs/build.md)
-- [开发进度与待办](docs/todo.md)
+- [待办任务](docs/todo.md)
 - [命令行接口](docs/cli.md)
 - [输入校验](docs/validation.md)
 - [代码风格与提交约定](docs/style.md)

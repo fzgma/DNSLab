@@ -1,6 +1,6 @@
 # 构建与测试
 
-本文说明如何准备依赖、编译和运行测试。当前功能见[项目首页](../README.md)，平台实测结果见[开发进度](todo.md#验证状态)。
+本文说明如何准备依赖、编译和运行测试。当前功能见[项目首页](../README.md)。
 
 ## 要求
 
@@ -72,7 +72,7 @@ ctest --preset linux-debug
 ./build-linux-debug/dnslab --version
 ```
 
-默认编译器太旧时，将 `CMAKE_CXX_COMPILER` 指向支持所需标准库的新编译器，并使用新的构建目录。目标发行版见 [mvp.md](mvp.md)，列出命令不表示该平台已经实测。
+默认编译器太旧时，将 `CMAKE_CXX_COMPILER` 指向支持所需标准库的新编译器，并使用新的构建目录。目标平台见 [mvp.md](mvp.md)。
 
 ## VS Code
 
@@ -100,7 +100,7 @@ ctest --test-dir build-system --output-on-failure
 
 共享预设使用 Ninja 和 Debug 配置，产物位于 `build-<预设名>`。自定义 Ninja 等单配置生成器时通过 `CMAKE_BUILD_TYPE` 选择 Debug 或 Release；Visual Studio 等多配置生成器在构建时使用 `--config`，测试时使用 `-C`，可执行文件位于对应的配置子目录。
 
-单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒。集成测试使用本地模拟服务器验证 UDP/TCP、自动回退、DoH、DoT 和多服务器比较，不访问公共 DNS。当前结果统一记录在 [todo.md](todo.md)。
+单元与集成用例设有 10 秒上限，命令行冒烟测试为 30 秒。集成测试使用本地模拟服务器验证 UDP/TCP、自动回退、DoH、DoT 和多服务器比较，不访问公共 DNS。
 
 加密集成测试使用 Python 标准库和仓库中的测试证书，HTTPS/TLS 监听临时端口；撤销列表服务固定使用 `127.0.0.1:18453`。资源锁只协调同一次 CTest 中的案例，不要同时从多个构建目录或独立进程运行这组测试。端口被占用时测试明确失败，详见 [TLS 测试夹具](../tests/fixtures/tls/README.md)。
 
@@ -118,16 +118,6 @@ Windows 将示例中的 `linux-debug` 换成对应预设名；预设已经启用
 
 IPv4 和 IPv6 均为必测项；环境不支持或回环收发失败会导致测试失败，不按跳过处理。
 
-### 本机网络测试失败
-
-IPv4 正常而 `::1` 的 UDP 超时、TCP 返回 Windows 错误 `10013` 时，应核对回环地址、路由和实际命中的系统过滤规则。不能仅凭错误码认定 DNSLab 有问题，也不能通过跳过 IPv6 用例获得通过结果。
-
-本机已确认一例 v2rayN / sing-box TUN 配置冲突：启用自动路由和严格路由，但未配置 TUN IPv6 地址，导致 `sing-tun` 的 `block ipv6` 规则连 `::1` 也一并阻断。独立 Python 探针与 WFP 丢弃事件的地址、端口及过滤器对应，Windows 防火墙在同一事件中放行。该行为与 [sing-tun v0.8.15 的实现](https://github.com/SagerNet/sing-tun/blob/v0.8.15/tun_windows.go#L268-L280)一致。
-
-这类情况应在代理的 TUN 配置中启用 IPv6 地址并重新加载，再复验回环收发；仅添加地址排除或回环路由无法移除无条件阻断规则。无需关闭 Windows 防火墙或修改查询代码。代理配置会影响本机网络，应由使用者确认后调整。
-
-若全部加密测试在握手时统一返回后端错误码 `35`，而相同程序与案例在普通本机环境通过，应先检查受限执行环境对 Schannel 的影响，不应因此关闭证书验证。单个测试服务未退出则应保留客户端原始结果和服务阶段，分别检查查询失败与夹具清理失败。
-
 ## 持续集成
 
 [构建与测试工作流](../.github/workflows/build-test.yml) 在推送、拉取请求和手动触发时执行，暂不配置依赖、构建或容器缓存。依赖按 `vcpkg.json` 的固定基线安装。
@@ -140,6 +130,6 @@ IPv4 正常而 `::1` 的 UDP 超时、TCP 返回 Windows 错误 `10013` 时，�
 | Debian | `debian:stable-slim` | 运行同一批 Linux 产物的三类测试 |
 | Arch | `archlinux:base` | 运行同一批 Linux 产物的三类测试 |
 
-工作流每次获取当前镜像并输出系统版本；承载 Docker 的 Ubuntu 运行器不代表被测发行版。具体版本与验证结果以 Actions 日志和[验证状态](todo.md#验证状态)为准。
+工作流每次获取当前镜像并在日志中输出系统版本；承载 Docker 的 Ubuntu 运行器不代表被测发行版。
 
 Linux 构建任务将程序、两个测试程序、构建元数据和 Catch2 发现脚本打包，三个发行版任务下载同一个包。运行任务结合当前仓库中的测试脚本与证书，通过 [tests/runtime](../tests/runtime/CMakeLists.txt) 注册已有产物；不安装编译器，也不重新编译。各任务保留测试日志。

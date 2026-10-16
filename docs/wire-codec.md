@@ -147,4 +147,4 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 
 消息测试覆盖固定 ID 的查询黄金样本、RD 开关、A/AAAA/CNAME、压缩 RDATA、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
 
-测试使用内存数据，不依赖公共 DNS；单元测试设置运行上限以暴露死循环。实际运行结果见 [todo.md](todo.md)。
+测试使用内存数据，不依赖公共 DNS；单元测试设置运行上限以暴露死循环。运行方式见[构建与测试](build.md)。
