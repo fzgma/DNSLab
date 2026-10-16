@@ -101,16 +101,18 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 │   ├── net/            # 端点、查询预算与普通及加密传输
 │   └── app/            # 响应匹配、单服务器查询与自动回退
 ├── tests/
+│   ├── main.cpp        # 测试入口与 Windows 中文参数处理
 │   ├── unit/           # 报文处理与网络基础测试
 │   ├── integration/    # 本地模拟服务器查询测试
 │   ├── support/        # 本地测试服务器辅助代码
 │   ├── fixtures/       # 离线 TLS 测试证书
 │   ├── runtime/        # 直接测试已有产物的入口
 │   └── cli_smoke.cmake # 命令行基础行为测试
-├── cmake/              # 版本信息与共享测试注册
+├── cmake/              # 工具链、版本信息与共享测试注册
 ├── .github/            # Windows/Linux 构建与测试流程
 ├── docs/               # 构建说明、设计与开发计划
 ├── CMakeLists.txt      # 构建与测试配置
+├── CMakePresets.json   # Windows/Linux 共享构建预设
 └── vcpkg.json          # 依赖声明
 ```
 
@@ -119,7 +121,7 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 - 服务器比较和 JSON 报告仍待实现；暂不支持其他查询类型、DNSSEC 验证和 IDN 自动转换。
 - DoH 使用 POST；DoT 不协商自定义 `dot` ALPN。加密连接失败不回退明文，也不使用代理环境变量。
 - 查询会发送给指定服务器；加密服务器名称的初次解析可能使用本机配置的普通 DNS。
-- 本分支已在 Windows MSYS2 UCRT64 验证新增查询功能；Windows MSVC 及 Ubuntu、Debian、Arch 的 Actions 记录来自上一阶段普通 DNS 实现。本分支尚未推送，具体结果与本机 IPv6 差异见[验证状态](docs/todo.md#验证状态)。
+- 各平台验证结果与本机 IPv6 回环限制统一记录在[验证状态](docs/todo.md#验证状态)。
 
 ## 7. 文档
 
@@ -130,8 +132,7 @@ Linux 使用 `linux-debug`，MSVC 使用 `msvc-debug`。依赖安装和 VS Code 
 - [开发进度与待办](docs/todo.md)
 - [命令行接口](docs/cli.md)
 - [输入校验](docs/validation.md)
-- [代码风格](docs/style.md)
-- [协作与提交约定](AGENTS.md)
+- [代码风格与提交约定](docs/style.md)
 
 ## 8. 开源协议
 

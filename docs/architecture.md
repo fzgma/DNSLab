@@ -1,47 +1,62 @@
 # 架构
 
-本文说明模块职责、依赖方向和一次查询的数据流。产品目标见 [prd.md](prd.md)，首版范围见 [mvp.md](mvp.md)，实际完成情况见 [todo.md](todo.md)。当前已接入单服务器查询命令及 UDP、TCP、自动回退、DoH 和 DoT；比较和文件报告仍为后续设计。
+本文说明当前单服务器查询的模块职责、传输编排和结果模型。命令与输入规则分别见 [cli.md](cli.md)、[validation.md](validation.md)。`compare` 与 JSON 报告尚未实现，其需求由 [prd.md](prd.md) 和 [mvp.md](mvp.md) 维护。
 
 ## 模块与依赖
 
 ```mermaid
 flowchart TD
-    CLI[命令行] --> App[查询与比较用例]
+    Main[命令行入口] --> App[查询用例]
+    Main --> Output[终端展示]
     App --> Codec[DNS 报文编解码]
-    App --> Net[网络传输]
-    App --> Result[查询结果]
-    Result --> Reporter[终端与文件报告]
+    App --> Plain[UDP 与 TCP 传输]
+    App --> Secure[DoH 与 DoT 传输]
+    App --> Match[响应匹配]
 ```
 
-| 模块 | 职责 | 边界 |
+| 位置 | 职责 | 边界 |
 | --- | --- | --- |
-| 命令行 | 解析选项、校验输入、调用用例、映射退出码 | 不实现报文解析或套接字收发 |
-| 查询与比较用例 | 生成事务 ID、编排传输、验证响应、决定回退、汇总结果 | 不承担平台套接字细节 |
-| 报文编解码 | 处理名称、查询报文、消息结构和记录数据 | 只处理内存数据，不访问网络、文件或终端 |
-| 网络传输 | 管理套接字、连接、收发、来源端点和超时 | 不解释 DNS 状态码，不决定 UDP→TCP 回退 |
-| 查询结果 | 保存服务器、尝试过程、有效响应及失败原因 | 不触发新的请求 |
-| 报告 | 根据同一份结果生成终端输出和 JSON | 不重新查询、不改变查询结论 |
+| `src/main.cpp` | 解析选项、校验输入、调用查询、映射退出码 | 不实现报文解析或网络收发 |
+| `src/cli/` | 将查询结果和错误转换为中文终端输出 | 不重新查询、不改变结论 |
+| `src/app/` | 准备事务、编排传输、匹配响应、决定回退、汇总尝试 | 不承担平台套接字或 TLS 细节 |
+| `src/dns/` | 处理名称、查询编码、消息解析和记录数据 | 只操作内存，不访问网络、文件或终端 |
+| `src/net/` | 处理端点、资源所有权、截止时间和消息收发 | 不解释 DNS RCODE，不决定 UDP→TCP 回退 |
 
-当前代码包含程序入口与 `src/cli/` 的终端展示、`src/dns/` 的报文处理、`src/net/` 的端点、资源、预算与各传输，以及 `src/app/` 的响应匹配和单服务器查询。文件报告接入时再创建相应模块。
+普通传输使用自有的非阻塞套接字适配；加密传输使用 libcurl 管理 HTTPS/TLS 连接。二者共享 DNS 编解码、响应匹配和截止时间模型。具体网络接口见 [network.md](network.md)，报文契约见 [wire-codec.md](wire-codec.md)。
 
-## 单服务器流程
+## 查询流程
 
-1. 命令行依据 [cli.md](cli.md) 和 [validation.md](validation.md) 验证全部输入，失败时不发起请求。
-2. 应用层生成事务 ID，构造一个问题，并记录该服务器查询的起始时间和绝对截止时间。
-3. 编码器生成查询字节；网络层按所选方式发送并接收数据。
-4. 对 UDP 检查来源 IP 和端口；解析消息结构，再验证 QR、事务 ID、OPCODE 以及唯一的 Question。
-5. 若模式为 `auto` 且完整、匹配的 UDP 响应设置了 TC，使用剩余时间通过 TCP 查询同一问题。
-6. 形成独立查询结果，交给报告层输出。
+1. 命令行检查选项组合、名称、目标和预算；显式 CA 文件还要通过基本预检。应用层独立复核其公开接口的参数。
+2. 应用层建立绝对截止时间，编码问题并确定事务 ID；普通查询及 DoT 默认生成 ID，DoH 默认使用零，调用方也可显式提供。
+3. 网络层发送查询并读取数据。UDP 先核对来源地址族、IP 和端口；其他传输使用已建立的目标连接。
+4. 解析完整 DNS 消息并进行响应匹配；只有验证通过且预算未到期才接受为成功。
+5. 普通 `auto` 模式按下述条件回退，其余模式直接形成结果；命令行展示响应或错误以及尝试过程。
 
-结构可解析不代表响应属于本次请求。来源、事务 ID、标志及问题匹配均通过后，才能接受为有效响应；名称匹配仅折叠 ASCII 大小写。忽略不匹配数据不能延长截止时间。
+每次查询只有一个基于 `steady_clock` 的截止时间。模式、预算、目标及 CA 基本预检在计时前完成，报文编码和事务 ID 准备计入总耗时。各次尝试从进入传输流程开始计时，因此尝试记录并不表示请求已经发出。部分收发、忽略无关消息和重新等待都不能续期。
 
-### 已实现的 UDP 用例
+### 普通查询
 
-`src/app/udp_query.hpp` 的 `query_udp(question, server, budget, transaction_id)` 返回 `std::expected<UdpQueryResult, UdpQueryError>`。预算默认使用已确认的查询默认值；事务 ID 可由调用方指定，也可由用例生成。调用前应完成用户输入校验，用例仍独立检查预算范围、目标端口和问题编码，非法参数不能发包。
+`query_server(question, server, mode, budget, transaction_id)` 位于 `src/app/query.hpp`，返回 `std::expected<QueryResult, QueryError>`。`server` 使用字面 IP 的 `Endpoint`；`TransportMode` 为 `Auto`、`Udp`、`Tcp`，默认 `Auto`。同一次查询复用事务 ID、编码报文和截止时间，每次传输只发送一次请求，不重传。
 
-每次调用只创建一次截止时间、发送一次查询，不重传。收到数据后先比较来源端点，来源不符时直接忽略；来源相同才解析完整消息并匹配问题。正确响应到达后仍检查截止时间，成功结果保留服务器、问题、事务 ID、完整响应、微秒耗时和忽略的数据报数量。
+- `Udp`：忽略错误来源的数据报；正确来源的畸形或不匹配响应也可被忽略，继续等待预算内的有效响应。
+- `Tcp`：读取一个完整长度帧后解析和匹配；合法长度帧中的无效响应可被忽略，继续读取下一帧。非法帧长度立即失败，连接失败、提前关闭与其他网络错误保留原始原因。
+- `Auto`：先 UDP，仅在来源正确、结构完整且匹配的响应设置 TC 时，向同一端点通过 TCP 发送同一查询。最多回退一次；UDP 超时不回退，TCP 响应带 TC 也不再查询。
 
-`src/app/response_validator.hpp` 的 `validate_response(response, question, transaction_id)` 只处理已经解析的消息，按下列顺序返回首个不匹配项：
+普通查询耗尽预算时，如果本次尝试没有收到可归属目标的无效响应，返回 `Timeout`；否则返回 `InvalidResponse`，保留最近一次解析错误或不匹配原因。错误来源只增加忽略计数，不改变这一区分。后续网络失败不会被此前的坏响应掩盖。
+
+`src/app/udp_query.hpp` 保留 `query_udp` 兼容接口，内部调用显式 UDP 模式，再转换为 `UdpQueryResult` / `UdpQueryError`；其 `ignored_datagrams` 对应统一模型的 `ignored_messages`。它不触发 TCP 回退。
+
+### 加密查询
+
+`query_encrypted(question, server, budget, tls, transaction_id)` 位于 `src/app/encrypted_query.hpp`，返回 `std::expected<EncryptedQueryResult, QueryError>`。目标使用 `EncryptedEndpoint` 保存 `Doh` 或 `Dot` 及规范地址，`TlsOptions` 可提供 CA 文件。
+
+网络层负责服务器名称解析、TLS 握手和消息边界；应用层复用查询编码、消息解析及响应匹配。一次加密查询只交换一个请求与响应，畸形或不匹配响应直接返回 `InvalidResponse`，不重试、不切换传输。证书、连接或收发失败也不能触发明文回退。
+
+DoH 使用 HTTPS POST 正文；DoT 在 TLS 上使用两字节长度帧，不发送 HTTP 请求。TLS 信任、HTTP 状态和媒体类型检查属于 [网络层](network.md#doh-与-dot)，不是 DNS 解析器职责。
+
+## 响应匹配
+
+`src/app/response_validator.hpp` 的 `validate_response(response, question, transaction_id)` 只接收已经解析的消息，按以下顺序返回首个不匹配项：
 
 | 不匹配项 | 检查 |
 | --- | --- |
@@ -49,97 +64,37 @@ flowchart TD
 | `TransactionId` | 事务 ID 必须相同 |
 | `Opcode` | OPCODE 必须为 0 |
 | `QuestionCount` | 必须恰好有一个问题 |
-| `QuestionName` | 名称按标签边界与 ASCII 大小写无关规则比较 |
-| `QuestionType` | 类型必须相同 |
-| `QuestionClass` | class 必须相同 |
+| `QuestionName` | 按标签边界比较，仅忽略 ASCII 字母大小写 |
+| `QuestionType` | 原始 16 位类型必须相同 |
+| `QuestionClass` | 原始 16 位类别必须相同 |
 
-有效的非零 RCODE、空 Answer、TC 及其他响应标志不会单独导致拒绝；显式 UDP 用例保留 TC，但不触发 TCP。应用层不把来源校验放入纯报文解析器。
-
-错误保留分类 `code`、对应详情 `detail` 和 `ignored_datagrams`：
-
-| 查询错误 | 行为 |
-| --- | --- |
-| `InvalidTimeout`、`InvalidEndpoint`、`Encode` | 预算、目标端口或问题编码不合法，发包前失败 |
-| `IdGeneration` | 自动生成事务 ID 失败，发包前失败 |
-| `Network` | 网络调用失败，保留操作阶段、系统码与网络错误分类 |
-| `Timeout` | 预算耗尽且没有收到正确来源的无效响应；没有响应或只有错误来源均属于此类 |
-| `InvalidResponse` | 预算耗尽前收到过正确来源的畸形或不匹配响应，保留最近一次解析错误或不匹配原因 |
-
-畸形或不匹配的响应不立即终止等待；后续有效响应仍可成功，但等待不能续期。`ignored_datagrams` 统计来源错误与被拒绝的数据报总数。详情使用组合类型保存原始错误，不在核心层拼接用户提示。
-
-### 已实现的统一查询用例
-
-`src/app/query.hpp` 的 `query_server(question, server, mode, budget, transaction_id)` 返回 `std::expected<QueryResult, QueryError>`。`TransportMode` 提供 `Auto`、`Udp`、`Tcp`，默认 `Auto`；选项语义以 [cli.md](cli.md#传输与超时) 为准。原 `query_udp` 接口保留，通过统一用例执行显式 UDP 查询。
-
-每次查询只生成一份事务 ID、报文和截止时间。TCP 直连目标后只发送一次带长度前缀的查询；自动模式先执行 UDP，仅在来源正确、报文完整且响应匹配的 TC 消息之后，向同一端点发送同一份 TCP 查询。最多发生一次回退，TCP 响应本身带 TC 时保留标志，不再次发起查询。
-
-| 数据 | 内容 |
-| --- | --- |
-| `QueryResult` | 服务器、问题、事务 ID、最终传输、完整响应、总耗时、忽略消息数和全部尝试 |
-| `QueryError` | 错误分类与详情、总耗时、忽略消息数和已经发生的尝试 |
-| `QueryAttempt` | 本次传输、本次耗时、有效响应或失败原因，以及本次忽略消息数 |
-
-`QueryTransport` 表示实际使用的 `Udp`、`Tcp`、`Doh` 或 `Dot`。每次尝试通过 `outcome` 保存响应或 `QueryFailure`，无论整体成功还是失败都能读取历史。回退失败时，第一次尝试仍保留有效 UDP TC 响应，第二次保存 TCP 失败；整体返回失败，不能把之前的截断响应当作最终成功结果。
-
-总耗时包含报文准备，各次尝试耗时从进入网络阶段开始计算。进入 TCP 尝试时如果预算已到期，记录该次超时但不连接；尝试记录本身不表示查询已经发出。
-
-TCP 每次读取一个完整帧，再复用 DNS 解析与响应匹配。合法长度帧中的畸形消息或不匹配响应可被忽略，后续帧仍有机会成功；耗尽预算时按是否收到过无效响应区分 `Timeout` 与 `InvalidResponse`。长度前缀不合法时立即返回 `InvalidResponse`，详情保留网络层的 `InvalidMessageLength`；连接失败、提前关闭与其他网络错误返回 `Network`，不会被之前的无效响应覆盖。
-
-`QueryErrorCode` 沿用 UDP 的错误含义，并增加发包前拒绝非法模式的 `InvalidMode`。非法预算、端口或问题同样在网络请求前失败；错误不改变 DNS RCODE 的含义。
-
-### 加密查询用例
-
-`src/app/encrypted_query.hpp` 的 `query_encrypted` 复用编码器、解析器和响应匹配，返回 `EncryptedQueryResult` 或共用的 `QueryError`。加密目标使用 `EncryptedEndpoint` 保存协议和规范地址，不改变普通查询的 IP 端点模型。结果仍保留问题、事务 ID、完整响应、耗时与尝试；错误详情可携带 `EncryptedError`。
-
-DoH 默认事务 ID 为零，DoT 默认生成事务 ID，调用方可显式指定。单次加密查询只交换一个请求与响应，畸形或不匹配响应直接失败，不重试、不改用其他传输。DNS 的非零 RCODE 和 TC 标志仍作为响应信息保留。
-
-`src/net/encrypted_transport.hpp` 管理 HTTPS/TLS 连接及消息边界，使用 libcurl 完成连接和证书验证，自有 DNS 编解码保持独立。DoH 发送 POST；DoT 在 TLS 连接上收发长度帧，不发送 HTTP 请求。网络接口和限制见 [network.md](network.md)。
-
-## 时间与传输
-
-每台服务器整个查询共用一个基于 `std::chrono::steady_clock` 的截止时间。UDP 收发、TCP 连接和收发、截断回退，以及加密服务器解析、TLS 握手和收发均使用剩余预算；部分收发和收到无关数据不能重置计时。具体选项范围由 [cli.md](cli.md) 维护。
-
-首版采用同步 I/O 和薄的平台适配层。Windows 正确管理 Winsock 生命周期，Linux 正确管理文件描述符；套接字通过 RAII 释放。所有可能阻塞的操作受截止时间控制。
-
-已实现的套接字默认非阻塞，同步查询通过可读、可写等待配合剩余预算完成收发。TCP 连接单独验证连接结果，不能只把可写事件当成成功。端点模型、资源所有权、截止时间与收发接口见 [network.md](network.md)。
-
-TCP 消息带两字节长度前缀。实现必须完成部分发送、前缀读取和正文读取，并校验声明长度。UDP 超时直接记录超时，不能触发自动 TCP 查询。
-
-## 比较流程
-
-每个不同端点执行一次查询，各自拥有独立预算、尝试记录和结果。一台失败不能取消其他端点的查询。
-
-首版允许顺序执行；后续可在保持上述语义的前提下并发。顺序执行时，整个比较命令可以超过单台服务器的时间预算。结果展示回答、状态和耗时差异，不把一次比较变成服务商排名。
+来源检查在传输用例中完成。非零 RCODE、空 Answer、TC 和其他响应标志不会单独导致匹配失败；资源记录内容不参与请求关联判断。
 
 ## 结果与错误
 
-查询结果至少保存：服务器端点、问题、实际传输、各次尝试、有效响应耗时、传输状态、DNS 状态码、标志、记录及错误。JSON 的交付字段见 [mvp.md](mvp.md#响应与输出交付)。
-
-| 信息 | 含义 |
+| 类型 | 内容 |
 | --- | --- |
-| 传输状态 | 是否成功获得并验证响应；可区分超时、连接拒绝、I/O 失败和无效响应 |
-| DNS 状态码 | 服务器返回的协议结果；没有有效响应时为空 |
-| 耗时 | 有效响应的查询耗时；没有有效响应时为空 |
-| 尝试记录 | 保留 UDP 截断与后续 TCP 的过程，不用最后一次结果覆盖全部历史 |
+| `QueryResult` | IP 服务器、问题、事务 ID、最终传输、完整响应、总耗时、忽略消息数和全部尝试 |
+| `EncryptedQueryResult` | 与普通结果相同的查询信息，服务器改为加密端点 |
+| `QueryError` | 错误分类和详情、总耗时、忽略消息数和已发生的尝试 |
+| `QueryAttempt` | 本次实际传输、耗时、响应或 `QueryFailure`，以及本次忽略消息数 |
 
-`NXDOMAIN`、`SERVFAIL`、`REFUSED` 均可能出现在传输成功的结果中。空 Answer 不等于域名不存在；不同答案或 TTL 不同也不直接等于错误。
+`QueryTransport` 表示实际使用的 `Udp`、`Tcp`、`Doh`、`Dot`。回退失败时，首次尝试仍保存有效 UDP TC 响应，第二次保存 TCP 失败；整体结果由最后一次尝试决定，不能把截断响应当作最终成功。
 
-核心函数通过 `std::expected` 返回可恢复错误；解析错误使用稳定枚举和报文偏移，不在每个错误对象中生成字符串。网络错误独立保存阶段与系统错误信息，不能用 DNS 状态码代替。用户提示在命令行或报告边界生成，退出码由 [cli.md](cli.md#输出与退出码) 统一定义。
+| `QueryErrorCode` | 含义 |
+| --- | --- |
+| `InvalidMode`、`InvalidTimeout`、`InvalidEndpoint` | 传输枚举、预算或目标无效，在请求前返回 |
+| `Encode`、`IdGeneration` | 问题编码或事务 ID 生成失败，在请求前返回 |
+| `Timeout` | 查询预算耗尽；普通查询与已收到无效响应的区分见上文 |
+| `InvalidResponse` | 响应结构、请求匹配、消息长度或 DoH 状态与媒体类型不合要求 |
+| `Network` | 网络或 TLS 后端失败，详情保留具体原因 |
 
-## 构建与依赖
+`QueryErrorDetail` 通过组合类型保留编码、解析、网络、响应匹配或加密错误，不在核心层生成提示字符串。显式 CA 预检失败使用 `Network` 与 `EncryptedErrorCode::InvalidTlsOptions` 详情，命令行将其识别为参数错误。
 
-- 使用 C++23，要求 `std::expected`、`std::span` 与 `std::print`；关闭编译器语言扩展。
-- 终端输出统一使用 `std::print` / `std::println`，文本格式化使用 `std::format`；中文提示与函数说明的要求见[代码风格](style.md)。
-- CMake 构建 `dnslab_core`、`dnslab`、`dnslab_tests` 和 `dnslab_integration_tests`；CTest 按 `smoke`、`unit`、`integration` 标签执行。
-- Linux 持续集成只编译一次，产物交给 Ubuntu、Debian、Arch 分别运行；`tests/runtime` 只注册已有产物的测试，不查找编译器或重新编译。环境和执行入口见[构建说明](build.md#持续集成)。
-- 使用 CLI11、Catch2 和带 TLS、HTTP/2、c-ares 异步解析支持的 libcurl；JSON 报告开始实现时才引入相应依赖。
-- Windows 的 libcurl 使用 Schannel，Linux 使用 OpenSSL；系统信任与指定 CA 均不关闭身份检查。TLS 集成测试由 Python 标准库提供本地服务器，不修改系统信任库。
-- vcpkg 固定实际验证的基线，具体步骤见 [build.md](build.md)。
-- 自行实现 DNS 报文处理，不引入替代核心解析器的 DNS 客户端库。
-- 首版不建立协程、事件循环或面向未来传输的插件系统。
+成功与失败都可记录耗时；计时前的参数预检失败时默认耗时为零且没有尝试。DNS RCODE 只来自已验证的响应，不能替代网络错误。`NXDOMAIN`、`SERVFAIL`、`REFUSED` 可以是传输成功的结果；空 Answer、不同答案或 TTL 差异也不直接等于传输失败。
 
-## 测试边界
+## 展示与验证边界
 
-纯编解码测试直接使用内存字节，不依赖公网。网络集成测试使用本地模拟服务器，覆盖成功、DNS 错误、超时、错误来源、错误问题、截断回退及分段 TCP 数据。
+终端层通过 `std::print` / `std::println` 展示目标、问题、完整响应、各记录区和尝试过程，错误说明在此边界生成；退出码由 [cli.md](cli.md#输出与退出码) 定义。代码风格见 [style.md](style.md)，工具链与依赖见 [build.md](build.md)。
 
-同时验证报文边界、循环指针、计数不符和错误长度；不根据不可信计数提前分配大量内存。命令行测试验证非法输入在收发前被拒绝，报告测试验证字段、退出码和覆盖保护。各阶段验收与平台状态只记录在 [todo.md](todo.md)。
+编解码和响应匹配测试使用内存数据；网络及命令行测试使用本地模拟 UDP、TCP、HTTPS 和 TLS 服务器，不依赖公共 DNS。测试覆盖来源与问题匹配、截断回退、部分收发、证书失败和共享预算；实际平台验证与待办统一记录在 [todo.md](todo.md)。

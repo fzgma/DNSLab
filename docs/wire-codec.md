@@ -1,6 +1,6 @@
 # DNS 报文编解码
 
-本文定义已实现的名称处理、查询报文编码和完整消息解析的接口、边界、算法和错误约定。查询输入规则统一见 [validation.md](validation.md)，与当前请求的匹配由 [architecture.md](architecture.md#已实现的-udp-用例) 中的应用层负责。
+本文定义名称处理、查询编码和消息解析的接口、边界及错误约定。查询输入规则见 [validation.md](validation.md)，请求关联由应用层的 [响应匹配](architecture.md#响应匹配) 负责。
 
 ## 边界与接口
 
@@ -22,7 +22,7 @@
 
 ## 整数与普通名称
 
-`read_u16_be`、`read_u32_be` 读取网络字节序整数，失败返回 `FieldOutOfBounds` 和请求偏移；`append_u16_be`、`append_u32_be` 追加对应字节。检查顺序必须先确认 offset 不超过输入大小，再比较剩余长度，最后进行索引或加法。
+`src/dns/byte_utils.hpp` 的 `read_u16_be`、`read_u32_be` 从传入偏移读取网络字节序整数，不推进调用方游标；失败返回 `FieldOutOfBounds` 和原请求偏移。`append_u16_be`、`append_u32_be` 追加对应字节。读取先确认 offset 不超过输入大小，再比较剩余长度，最后索引或加法，保证 `SIZE_MAX` 等极端偏移也安全失败。
 
 普通名称按“标签长度、标签字节”连续编码，最后追加一个零字节。单标签最长 63 字节，完整展开编码最长 255 字节，包含全部长度字节和根终止字节。
 
@@ -64,9 +64,9 @@
 | `ResourceRecord` | owner、原始类型、class、32 位 TTL 和 RDATA |
 | `DnsMessage` | Header 及 Question、Answer、Authority、Additional 四个独立集合 |
 
-记录数据使用 A 的 4 字节地址、AAAA 的 16 字节地址、CNAME 的名称或不透明原始字节。保留未知类型、class 和 flags 位，不将 Additional 记录混入 Answer。
+`RData` 是 `AData`、`AaaaData`、`NameData`、`OpaqueData` 的 `std::variant`。前两者的 `address` 分别保存 4 字节和 16 字节地址，后两者用 `name`、`bytes` 保存 CNAME 名称和不透明字节。未知类型、class 和 flags 位原样保留。
 
-记录数据分别由 `AData::address`、`AaaaData::address`、`NameData::name` 和 `OpaqueData::bytes` 保存，`RData` 使用这四种类型的 `std::variant`。`DnsMessage` 的集合成员为 `questions`、`answers`、`authority` 和 `additional`；Question 的 class 字段为 `qclass`，记录的 class 字段为 `rr_class`。
+`DnsMessage` 的集合成员为 `questions`、`answers`、`authority`、`additional`，不把附加记录混入应答；问题的 class 字段为 `qclass`，记录的 class 字段为 `rr_class`。
 
 `DnsHeader` 保存 `id`、`flags`，通过 `is_response()`、`opcode()`、`authoritative_answer()`、`truncated()`、`recursion_desired()`、`recursion_available()`、`authenticated_data()`、`checking_disabled()` 和 `rcode()` 读取标志；访问器不修改原始值。
 
@@ -89,7 +89,7 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
 4. 成功后集合长度表达实际数量，无需重复存储 Header 计数。
 5. 所有集合处理完成后仍有剩余字节，返回 `TrailingData`。
 
-解析器只保证结构完整。应用层另行检查 UDP 来源、QR=1、事务 ID、标准查询 OPCODE、恰好一个 Question，以及名称、类型和 class 的匹配。
+解析器只保证结构完整，不限制 QR、事务 ID、OPCODE 或问题数量，也不执行请求匹配。
 
 ### 资源记录
 
@@ -99,14 +99,14 @@ encode_query(const DnsQuestion& question, std::uint16_t transaction_id,
 | --- | --- |
 | A（1），IN（1） | RDLENGTH 必须为 4，否则 `InvalidRdataLength` |
 | AAAA（28），IN（1） | RDLENGTH 必须为 16，否则 `InvalidRdataLength` |
-| CNAME（5） | 在整个报文中从 RDATA 起点解码名称，`consumed` 必须等于 RDLENGTH，否则 `RdataLengthMismatch` |
+| CNAME（5），任意 class | 在整个报文中从 RDATA 起点解码名称，`consumed` 必须等于 RDLENGTH，否则 `RdataLengthMismatch` |
 | 其他类型，或不支持的 A/AAAA class | 保存不透明原始字节，不猜测结构 |
 
 压缩名称的目标始终以整个报文为基准，不能以 RDATA 子视图为基准。CNAME 的 RDLENGTH 计算压缩后的实际字节数，而非展开后的名称长度。
 
 ### 查询编码
 
-首版仅编码一个 A 或 AAAA、IN class 的问题。事务 ID 由调用方提供；查询编码器不负责随机数。
+`encode_query` 仅编码一个 A 或 AAAA、IN class 的问题。事务 ID 由调用方提供；查询编码器不负责随机数。
 
 Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD 按参数设置。QDCOUNT 为 1，其余计数为 0。QNAME 不压缩，后接大端 QTYPE 和 QCLASS；不附加 EDNS 记录。
 
@@ -147,4 +147,4 @@ Header 的 QR、OPCODE、AA、TC、RA、RCODE 及其他扩展位均为 0；RD �
 
 消息测试覆盖固定 ID 的查询黄金样本、RD 开关、A/AAAA/CNAME、压缩 RDATA、未知类型和 class、各集合数量不符、错误 RDLENGTH、尾随字节以及 flags 保留。
 
-测试使用内存数据，不依赖公共 DNS。单元测试设置运行上限以暴露死循环；支持的工具链可增加模糊测试和内存检查。实际运行结果见 [todo.md](todo.md)，不把计划中的检查写成已执行。
+测试使用内存数据，不依赖公共 DNS；单元测试设置运行上限以暴露死循环。实际运行结果见 [todo.md](todo.md)。

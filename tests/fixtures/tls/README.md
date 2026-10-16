@@ -1,15 +1,11 @@
-这些证书和未加密私钥是**公开的测试数据**，不得用于生产服务，也不得导入系统证书库。
-测试仅通过客户端的 `--ca-file` 选项信任 `ca.pem`。
+# TLS 测试夹具
 
-`server.pem` 包含 localhost、127.0.0.1 和 ::1；`wrong-host.pem` 故意不包含这些名称。
-`expired.pem` 已于 2021 年过期。正常证书的有效期为 2020 年至 2039 年，不依赖生成日期。
+这些证书和未加密私钥是**公开的测试数据**，不得用于生产服务或导入系统证书库。需要信任测试 CA 的案例通过客户端的 `--ca-file` 选项加载 `ca.pem`；不信任证书的案例保留正常验证并预期失败。
 
-证书指向本地吊销列表 `http://127.0.0.1:18453/dnslab-test-root.crl`。
-Python 测试在运行期间通过该端口提供 `root.crl`，使 Windows Schannel 在无需外网的情况下
-保留正常的吊销检查。该列表也在 2020 年至 2039 年有效。
-端口被其他进程占用时，测试会明确失败，不会终止其他进程。
-CTest 必须为这些案例设置 `dnslab_test_crl` 资源锁；HTTPS 和 DoT 服务另用临时回环端口。
+`server.pem` 的身份包含 `localhost`、`127.0.0.1` 和 `::1`；`wrong-host.pem` 只包含故意不匹配的名称。`expired.pem` 于 2021-01-01 00:00 UTC 过期，CA 与其他证书的有效期为 2020-01-01 00:00 至 2040-01-01 00:00 UTC。
 
-`generate_certificates.py` 可重新生成全部文件，仅重新生成时需要可选的 Python
-cryptography 包。正常测试只需要 Python 标准库。CA 签名私钥只在生成过程中保存在内存，
-不会写入文件。测试不会修改系统信任设置。
+证书指向本地撤销列表 `http://127.0.0.1:18453/dnslab-test-root.crl`。Python 测试运行期间在该地址提供 `root.crl`，使 Windows Schannel 无需外网即可执行撤销检查。列表的更新时间与下次更新时间分别为 2020-01-01 00:00 UTC 和 2040-01-01 00:00 UTC；HTTPS 与 DoT 服务使用临时回环端口。
+
+[测试注册](../../../cmake/DNSLabTests.cmake) 已为加密案例设置 `dnslab_test_crl` 资源锁，同一次 CTest 中可安全并行调度。该锁不协调独立 CTest 进程或直接启动的 Python 测试，因此不要同时运行多份加密测试。端口被其他进程占用时明确失败，不终止占用进程。
+
+[generate_certificates.py](generate_certificates.py) 可重新生成全部证书、服务器私钥和撤销列表，只有这一步需要额外安装 Python `cryptography` 包；正常测试仅使用 Python 标准库。CA 签名私钥仅保存在生成进程内存中。生成后需整体更新这些夹具，避免混用不同 CA 签发的文件。

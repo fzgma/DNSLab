@@ -1,6 +1,6 @@
 # 网络传输
 
-本文定义已实现的端点模型、套接字所有权、查询预算和 UDP/TCP 收发。输入规则见 [validation.md](validation.md)，响应匹配与单服务器查询、自动回退用例见 [architecture.md](architecture.md)。
+本文定义端点模型、套接字所有权、查询预算以及 UDP、TCP、DoH、DoT 传输。输入规则见 [validation.md](validation.md)，响应匹配与传输编排见 [architecture.md](architecture.md)。
 
 所有接口位于 `dnslab::net`，核心层不打印提示，也不将网络错误解释为 DNS 响应码。
 
@@ -32,7 +32,7 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 ### 网络错误
 
-`src/net/errors.hpp` 定义 `NetworkError`，保存 `operation`、原生 `system_code` 与错误分类 `code`，不分配动态说明文本。`code` 默认为 `System`，原有初始化和创建错误保持此分类。
+`src/net/errors.hpp` 定义普通传输的 `NetworkError`，保存 `operation`、原生 `system_code` 与错误分类 `code`，不分配动态说明文本。`code` 默认为 `System`，用于初始化、创建及系统调用失败；加密后端另用 `EncryptedError`。
 
 | 操作阶段 | 含义 |
 | --- | --- |
@@ -69,7 +69,7 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 | `expired(now)` | 检查是否已经到期，当前时刻默认读取单调时钟 |
 | `remaining(now)` | 读取剩余毫秒，正的不足一毫秒向上取整；到期或过期为零 |
 
-每台服务器在开始查询时只创建一次预算，UDP、TCP 和回退复用同一截止时间。部分收发、无关响应和重新等待只能减少可用时间，不能重新调用 `after` 获得整段预算。不同服务器分别创建预算；对象没有重置或续期接口。系统等待返回后仍需再次检查是否到期，不能将毫秒向上取整解释为延长查询预算。
+每次查询只创建一次截止时间，覆盖普通传输及回退，或加密目标的名称解析、TLS 握手与消息交换。部分收发、无关响应和重新等待只能减少可用时间，不能重新调用 `after` 获得整段预算。对象没有重置或续期接口。系统等待返回后仍需再次检查是否到期，不能将毫秒向上取整解释为延长查询预算。
 
 `after` 对零或负的内部预算使用起始时刻，对无法表示的未来时刻饱和到时钟上限；`remaining` 的极端差值也不会发生有符号溢出，超过毫秒类型表示能力时饱和。用户输入仍必须先通过 `parse_timeout_ms`，范围和错误由 [validation.md](validation.md#超时输入) 定义。
 
@@ -113,19 +113,38 @@ Windows 通过 [WSASocketW](https://learn.microsoft.com/en-us/windows/win32/api/
 
 ## DoH 与 DoT
 
-`src/net/encrypted_transport.hpp` 提供加密目标解析、TLS 配置预检与 `exchange_encrypted(endpoint, query, deadline, tls)`。`EncryptedEndpoint` 包含传输方式与规范化地址；`TlsOptions` 可指定 CA 文件，空值使用系统信任。地址规则集中在 [validation.md](validation.md#加密服务器地址)。
+`src/net/encrypted_transport.hpp` 定义 `EncryptedEndpoint`，包含 `EncryptedTransport::Doh` 或 `Dot` 及规范地址；`TlsOptions::ca_file` 可指定 CA 文件，空值使用系统信任。
 
-libcurl 负责 TLS 和 HTTPS，依赖启用 HTTP/2 与异步名称解析。句柄及连接仅属于一次调用，不复用到其他目标；显式禁用代理、重定向和明文降级。检查证书链、有效期和服务器身份，TLS 最低为 1.2。Windows 默认使用系统证书库，Linux 在运行环境查找 CA 文件，避免把构建容器的路径当作发行版通用路径；显式 CA 文件由调用者指定。
+| 接口 | 用途 |
+| --- | --- |
+| `parse_doh_endpoint(input)`、`parse_dot_endpoint(input)` | 校验并规范化加密目标，规则见 [输入校验](validation.md#加密服务器地址) |
+| `validate_tls_options(tls)` | 检查显式 CA 文件可读性和 PEM 基本边界，不联网或修改系统信任 |
+| `exchange_encrypted(endpoint, query, deadline, tls)` | 复核目标、查询长度和 TLS 配置后交换消息，返回完整字节或 `EncryptedError` |
 
-- DoH 使用 [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html) 的 POST 形式，请求头与正文类型为 `application/dns-message`，正文直接承载 DNS 消息。仅接受 HTTP 200 和正确的媒体类型，累积正文最多 65535 字节，少于 12 字节也失败；不接受 HTML 或重定向页面作为 DNS。
+libcurl 负责 HTTPS/TLS 和连接资源，不使用普通传输的 `Socket` 所有权模型。运行时要求 TLS 与 c-ares 异步解析能力，DoH 还要求 HTTP/2 支持；缺失时返回 `BackendUnavailable`。每次交换创建独立连接，显式禁用代理、重定向和明文降级，检查证书链、有效期与服务器身份，最低 TLS 1.2。
+
+Windows 使用 Schannel，默认读取系统证书库；Linux 使用 OpenSSL，在运行环境依次查找 `/etc/ssl/certs/ca-certificates.crt`、`/etc/pki/tls/certs/ca-bundle.crt`、`/etc/ssl/cert.pem`，不使用构建环境的 CA 目录。找不到系统 CA 文件且未显式指定时返回 `BackendUnavailable`。显式 CA 文件仍执行证书验证，不提供跳过验证的选项。
+
+- DoH 使用 [RFC 8484](https://www.rfc-editor.org/rfc/rfc8484.html) 的 POST 形式，`Content-Type` 与 `Accept` 为 `application/dns-message`，正文直接承载 DNS 消息而不加长度前缀。优先协商 HTTP/2，也允许 HTTP/1.1；仅接受 HTTP 200 和正确媒体类型，类型比较忽略大小写并允许参数。累积正文限于 12–65535 字节，不能把 HTML 或重定向页面作为 DNS。
 - DoT 使用 [RFC 7858](https://www.rfc-editor.org/rfc/rfc7858.html) 的 TLS 长度帧。通过 [libcurl connect-only](https://curl.se/libcurl/c/CURLOPT_CONNECT_ONLY.html) 建立 TLS 后，用其加密读写接口处理部分收发；禁用 HTTP ALPN，不发送 HTTP 请求，也不协商自定义 `dot` ALPN。接收前缀后先校验 12–65535 字节范围，再读取恰好一个消息。
 
 连接与 HTTPS 交换使用剩余预算；DoT 在握手后继续使用原 `Deadline`。收发先尝试库内缓存，只有需要等待时才等待对应套接字，避免漏掉 TLS 内已解密的数据。EOF、超时、错误帧和证书失败不返回部分成功数据。响应的 DNS 语义仍由应用层解析与匹配。
 
-`EncryptedError` 区分无效输入、证书验证、超时、HTTP 状态、媒体类型、消息长度、提前关闭及后端错误，并保留后端错误码或 HTTP 状态。错误不能触发 UDP/TCP 回退。加密端点为域名时，初次名称解析可能通过本机配置的普通 DNS 完成。
+`EncryptedError` 保存分类 `code`、原始 `backend_code`（CURLcode）、`http_status` 与输入 `offset`。未涉及的数字诊断字段为零，端点偏移规则见 [输入校验](validation.md#加密服务器地址)。
+
+| 错误分类 | 含义 |
+| --- | --- |
+| `InvalidEndpoint`、`InvalidTlsOptions` | 目标或 TLS 配置无效；CA 证书内容也可能由后端报告加载失败 |
+| `InvalidMessageLength` | 请求或响应消息长度不在 12–65535 字节范围内 |
+| `BackendUnavailable`、`Backend` | 缺少所需后端能力或运行时系统 CA 文件，或发生其他后端错误 |
+| `CertificateVerification` | 证书验证失败 |
+| `TimedOut`、`ConnectionClosed` | 预算耗尽，或所需字节完成前连接关闭 |
+| `HttpStatus`、`InvalidContentType` | DoH 响应状态或媒体类型不符合要求 |
+
+错误不能触发 UDP/TCP 回退。加密端点为域名时，初次名称解析可能通过本机配置的普通 DNS 完成。
 
 ## 验证边界
 
 端点测试只进行内存转换；预算测试传入固定时刻，不使用真实休眠。套接字测试只创建本机资源，并使用回环地址验证非阻塞状态，不联系公共 DNS。创建、移动、关闭和析构必须同时验证资源仍归唯一对象所有。
 
-UDP 测试使用 IPv4/IPv6 回环地址和临时端口，验证地址转换、来源、字节保留、空数据报与截止时间。TCP 测试验证连接、部分收发、消息边界、提前关闭与预算；查询集成测试使用本地模拟服务器验证响应匹配、错误恢复与自动回退。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。
+UDP/TCP 测试使用 IPv4/IPv6 回环地址和临时端口，验证地址转换、部分收发、消息边界、关闭与预算。加密测试使用本地 HTTPS/TLS 服务器、测试 CA 和证书撤销列表，覆盖证书失败、消息长度、HTTP 响应及预算，不修改系统信任库。平台实测结果与测试数量统一记录在 [todo.md](todo.md)。
