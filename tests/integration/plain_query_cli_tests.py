@@ -5,6 +5,7 @@ CTest 通过 --list-cases 发现案例，并以 --executable 和 --case 单独�
 
 import argparse
 from contextlib import contextmanager
+import errno
 from pathlib import Path
 import select
 import socket
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+from unittest.mock import patch
 
 
 EXECUTABLE = None
@@ -208,6 +210,41 @@ def bind_socket(kind, port=0):
         raise
 
 
+@contextmanager
+def bind_udp_tcp_pair():
+    """有界寻找能同时持有 UDP 与 TCP 的回环端口，避免假设两种协议的端口可用性相同。"""
+    last_error = None
+    last_port = None
+    for _ in range(32):
+        # 先从 UDP 动态范围取候选，再验证 TCP；不使用地址复用绕过占用或系统限制。
+        udp = bind_socket(socket.SOCK_DGRAM)
+        last_port = udp.getsockname()[1]
+        try:
+            tcp = bind_socket(socket.SOCK_STREAM, last_port)
+        except OSError as error:
+            udp.close()
+            if error.errno not in (errno.EADDRINUSE, errno.EACCES, 10048, 10013) and \
+                    getattr(error, "winerror", None) not in (10048, 10013):
+                raise
+            last_error = error
+            continue
+        except BaseException:
+            udp.close()
+            raise
+        try:
+            tcp.listen(1)
+            yield tcp, udp
+        finally:
+            tcp.close()
+            udp.close()
+        return
+    code = getattr(last_error, "winerror", None) or last_error.errno
+    raise RuntimeError(
+        f"32 次候选均无法同时绑定 UDP/TCP；最后候选 127.0.0.1:{last_port} "
+        f"的 TCP 绑定失败，系统错误码 {code}"
+    ) from last_error
+
+
 def endpoint(server):
     """读取服务器实际端口并生成命令行端点文本。"""
     return f"127.0.0.1:{server.getsockname()[1]}"
@@ -364,31 +401,29 @@ def plain_tcp_direct_soa():
 @case
 def plain_auto_fallback_uses_identical_query():
     """验证默认回退复用同一问题和事务 ID。"""
-    with bind_socket(socket.SOCK_STREAM) as tcp:
-        tcp.listen(1)
-        with bind_socket(socket.SOCK_DGRAM, tcp.getsockname()[1]) as udp:
-            requests = []
+    with bind_udp_tcp_pair() as (tcp, udp):
+        requests = []
 
-            def serve(deadline):
-                """在给定截止时间内处理本场景的回环查询。"""
-                query, sender = udp.recvfrom(65535)
-                check_request(query)
-                requests.append(query)
-                udp.sendto(response(query, truncated=True), sender)
-                stream, _ = tcp.accept()
-                with stream:
-                    tcp_query = read_frame(stream, deadline)
-                    requests.append(tcp_query)
-                    send_frame(stream, answer_response(tcp_query, "A"))
+        def serve(deadline):
+            """在给定截止时间内处理本场景的回环查询。"""
+            query, sender = udp.recvfrom(65535)
+            check_request(query)
+            requests.append(query)
+            udp.sendto(response(query, truncated=True), sender)
+            stream, _ = tcp.accept()
+            with stream:
+                tcp_query = read_frame(stream, deadline)
+                requests.append(tcp_query)
+                send_frame(stream, answer_response(tcp_query, "A"))
 
-            with worker(serve):
-                # 默认模式应为自动回退，由客户端生成事务 ID。
-                result = invoke(endpoint(tcp), "-t", "a", "--timeout-ms", "1500")
-            require(len(requests) == 2 and requests[0] == requests[1],
-                    "UDP 与 TCP 必须使用同一报文和事务 ID")
-            for text in ("传输: tcp", "尝试: 2", "1. udp", "2. tcp",
-                         "TC=1", "TC=0", "example.com. 60 IN A 192.0.2.10"):
-                require(text in result.stdout, f"缺少回退输出 {text!r}: {result.stdout}")
+        with worker(serve):
+            # 默认模式应为自动回退，由客户端生成事务 ID。
+            result = invoke(endpoint(tcp), "-t", "a", "--timeout-ms", "1500")
+        require(len(requests) == 2 and requests[0] == requests[1],
+                "UDP 与 TCP 必须使用同一报文和事务 ID")
+        for text in ("传输: tcp", "尝试: 2", "1. udp", "2. tcp",
+                     "TC=1", "TC=0", "example.com. 60 IN A 192.0.2.10"):
+            require(text in result.stdout, f"缺少回退输出 {text!r}: {result.stdout}")
 
 
 @case
@@ -426,14 +461,93 @@ def plain_query_failures_exit_one():
 @case
 def plain_invalid_inputs_do_not_use_the_network():
     """验证非法参数在 UDP 发包和 TCP 连接之前被拒绝。"""
-    with bind_socket(socket.SOCK_STREAM) as tcp:
-        tcp.listen(1)
-        with bind_socket(socket.SOCK_DGRAM, tcp.getsockname()[1]) as udp:
-            for options in (("--type", "ANY"), ("--type", "AXFR"), ("--type", "A", "-t", "A")):
-                result = invoke(endpoint(tcp), *options, expected_code=2)
-                require("参数错误:" in result.stderr, result.stderr)
-            readable, _, _ = select.select([udp, tcp], [], [], 0.05)
-            require(not readable, "非法命令参数发送了 UDP 数据或建立了 TCP 连接")
+    with bind_udp_tcp_pair() as (tcp, udp):
+        for options in (("--type", "ANY"), ("--type", "AXFR"), ("--type", "A", "-t", "A")):
+            result = invoke(endpoint(tcp), *options, expected_code=2)
+            require("参数错误:" in result.stderr, result.stderr)
+        readable, _, _ = select.select([udp, tcp], [], [], 0.05)
+        require(not readable, "非法命令参数发送了 UDP 数据或建立了 TCP 连接")
+
+
+@case
+def plain_dual_protocol_fixture_handles_bind_failures():
+    """用真实套接字资源验证候选受限或占用时重选、清理、有界失败和其他错误传播。"""
+    original_bind = bind_socket
+    for mode in ("restricted", "busy", "exhausted", "unexpected"):
+        allocated = []
+        candidates = []
+        failure = OSError(errno.EINVAL if mode == "unexpected" else
+                          errno.EADDRINUSE if mode == "busy" else errno.EACCES,
+                          "注入的候选端口绑定失败")
+        if mode in ("restricted", "exhausted"):
+            failure.winerror = 10013
+
+        def controlled_bind(kind, port=0):
+            """仅在第二种协议绑定时注入错误，其他步骤仍创建真实本地资源。"""
+            if kind == socket.SOCK_STREAM:
+                candidates.append(port)
+                if mode in ("exhausted", "unexpected") or len(candidates) == 1:
+                    raise failure
+            server = original_bind(kind, port)
+            allocated.append(server)
+            return server
+
+        with patch(__name__ + ".bind_socket", controlled_bind):
+            if mode in ("restricted", "busy"):
+                with bind_udp_tcp_pair() as (tcp, udp):
+                    require(len(candidates) >= 2, "第二协议绑定失败后没有重选候选")
+                    require(allocated[0].fileno() == -1, "失败候选的 UDP 套接字未关闭")
+                    require(tcp.getsockname() == udp.getsockname(), "两种协议没有持有同一端点")
+                    require(tcp.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) == 1,
+                            "返回的 TCP 套接字尚未监听")
+            else:
+                try:
+                    with bind_udp_tcp_pair():
+                        raise AssertionError("端口持续失败时仍返回了服务器")
+                except RuntimeError as error:
+                    require(mode == "exhausted" and error.__cause__ is failure,
+                            "候选耗尽没有保留原始系统错误")
+                    require(len(candidates) == 32, "候选重试没有遵守固定次数上限")
+                    require(str(candidates[-1]) in str(error) and "10013" in str(error),
+                            "候选耗尽缺少端口或原始错误码")
+                except OSError as error:
+                    require(mode == "unexpected" and error is failure and len(candidates) == 1,
+                            "不属于候选冲突的错误被重试或替换")
+                else:
+                    raise AssertionError("候选绑定失败没有向调用方报告")
+        require(all(server.fileno() == -1 for server in allocated), "双协议分配泄漏了套接字")
+
+    for mode in ("first_protocol", "consumer"):
+        allocated = []
+        calls = []
+        body_call_count = None
+        failure = OSError(errno.EACCES, "注入的非候选绑定错误")
+
+        def controlled_bind(kind, port=0):
+            """记录分配次数，必要时只让第一协议的动态端口绑定失败。"""
+            calls.append((kind, port))
+            if mode == "first_protocol":
+                raise failure
+            server = original_bind(kind, port)
+            allocated.append(server)
+            return server
+
+        with patch(__name__ + ".bind_socket", controlled_bind):
+            try:
+                with bind_udp_tcp_pair():
+                    require(mode == "consumer", "第一协议绑定失败后仍返回了服务器")
+                    body_call_count = len(calls)
+                    raise failure
+            except OSError as error:
+                require(error is failure, "第一协议或调用方异常没有原样报告")
+            else:
+                raise AssertionError("第一协议或调用方异常被吞掉")
+        if mode == "first_protocol":
+            require(calls == [(socket.SOCK_DGRAM, 0)], "第一协议动态端口失败被错误重试")
+        else:
+            require(body_call_count is not None and len(calls) == body_call_count,
+                    "调用方的访问错误被误当作端口冲突并重试")
+        require(all(server.fileno() == -1 for server in allocated), "异常退出泄漏了套接字")
 
 
 def main():

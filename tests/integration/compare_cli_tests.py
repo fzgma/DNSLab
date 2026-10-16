@@ -413,10 +413,8 @@ def compare_tcp_aaaa():
 @case
 def compare_auto_fallback():
     """验证每台独立应用自动回退，保留 UDP 与 TCP 尝试且不影响响应比较。"""
-    with plain.bind_socket(socket.SOCK_STREAM) as tcp:
-        tcp.listen(1)
-        with plain.bind_socket(socket.SOCK_DGRAM, tcp.getsockname()[1]) as first_udp, \
-                plain.bind_socket(socket.SOCK_DGRAM) as second_udp:
+    with plain.bind_udp_tcp_pair() as (tcp, first_udp):
+        with plain.bind_socket(socket.SOCK_DGRAM) as second_udp:
             requests = []
 
             def first(deadline):
@@ -458,9 +456,7 @@ def reject_without_network(argument_sets, expected_detail=None):
         monitored = []
         endpoints = []
         for _ in range(2):
-            tcp = stack.enter_context(plain.bind_socket(socket.SOCK_STREAM))
-            tcp.listen(1)
-            udp = stack.enter_context(plain.bind_socket(socket.SOCK_DGRAM, tcp.getsockname()[1]))
+            tcp, udp = stack.enter_context(plain.bind_udp_tcp_pair())
             monitored.extend((tcp, udp))
             endpoints.append(plain.endpoint(tcp))
         for arguments in argument_sets(*endpoints):
